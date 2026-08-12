@@ -1,0 +1,3 @@
+# Keep the PyTorch build provided by the NGC base image.
+tabicl==2.1.1
+streamlit==1.59.2
