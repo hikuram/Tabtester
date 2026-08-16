@@ -5,8 +5,10 @@ import io
 import math
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import streamlit as st
 import torch
 from sklearn.metrics import (
@@ -19,7 +21,13 @@ from sklearn.metrics import (
     r2_score,
 )
 from sklearn.model_selection import train_test_split
+
+# TabICL imports
 from tabicl import TabICLClassifier, TabICLRegressor
+
+# TabFM imports
+from tabfm import TabFMClassifier, TabFMRegressor
+from tabfm import tabfm_v1_0_0_pytorch as tabfm_v1_0_0
 
 
 APP_TITLE = "Tabtester"
@@ -28,6 +36,20 @@ DEFAULT_RANDOM_STATE = 42
 DEFAULT_N_ESTIMATORS = 8
 DEFAULT_BATCH_SIZE = 4
 MIN_RECOMMENDED_ROWS = 300
+
+
+@st.cache_resource(show_spinner="Loading TabFM base model weights...")
+def load_tabfm_base_model(task: str, device: str) -> Any:
+    """
+    Loads and caches the TabFM foundation model weights to avoid reloading 
+    into VRAM/RAM on every Streamlit interaction.
+    """
+    model_type = "regression" if task == "Regression" else "classification"
+    target_device = device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+    
+    model = tabfm_v1_0_0.load(model_type=model_type)
+    model = model.to(target_device)
+    return model
 
 
 def package_version(name: str) -> str:
@@ -53,27 +75,40 @@ def csv_bytes(df: pd.DataFrame) -> bytes:
 
 
 def build_model(
+    model_name: str,
     task: str,
-    n_estimators: int,
-    batch_size: int,
-    kv_cache: bool,
     device: str,
     random_state: int,
-    model_path: str,
+    # TabICLv2 specific kwargs
+    n_estimators: int = 8,
+    batch_size: int = 4,
+    kv_cache: bool = False,
+    model_path: str = "",
 ) -> Any:
-    kwargs = {
-        "n_estimators": n_estimators,
-        "batch_size": batch_size,
-        "kv_cache": kv_cache,
-        "device": None if device == "auto" else device,
-        "random_state": random_state,
-        "model_path": model_path.strip() or None,
-        "use_amp": "auto",
-        "offload_mode": "auto",
-    }
-    if task == "Regression":
-        return TabICLRegressor(**kwargs)
-    return TabICLClassifier(**kwargs)
+    """Instantiates the selected model backend."""
+    
+    if model_name == "TabICLv2":
+        kwargs = {
+            "n_estimators": n_estimators,
+            "batch_size": batch_size,
+            "kv_cache": kv_cache,
+            "device": None if device == "auto" else device,
+            "random_state": random_state,
+            "model_path": model_path.strip() or None,
+            "use_amp": "auto",
+            "offload_mode": "auto",
+        }
+        if task == "Regression":
+            return TabICLRegressor(**kwargs)
+        return TabICLClassifier(**kwargs)
+        
+    elif model_name == "TabFM":
+        base_model = load_tabfm_base_model(task, device)
+        if task == "Regression":
+            return TabFMRegressor(model=base_model)
+        return TabFMClassifier(model=base_model)
+    
+    raise ValueError(f"Unknown model name: {model_name}")
 
 
 def prepare_xy(
@@ -103,55 +138,85 @@ def safe_stratify(y: pd.Series, test_size: float) -> pd.Series | None:
     return y
 
 
-def regression_metrics(y_true: pd.Series, y_pred: np.ndarray) -> pd.DataFrame:
+def regression_metrics(y_true: pd.Series, y_pred: np.ndarray) -> dict[str, float]:
     rmse = math.sqrt(mean_squared_error(y_true, y_pred))
-    return pd.DataFrame(
-        {
-            "Metric": ["R2", "MAE", "RMSE"],
-            "Value": [r2_score(y_true, y_pred), mean_absolute_error(y_true, y_pred), rmse],
-        }
-    )
+    return {
+        "R2 Score": r2_score(y_true, y_pred),
+        "MAE": mean_absolute_error(y_true, y_pred),
+        "RMSE": rmse
+    }
 
 
-def classification_metrics(
-    model: Any,
-    X_test: pd.DataFrame,
-    y_true: pd.Series,
-    y_pred: np.ndarray,
-) -> pd.DataFrame:
-    names = ["Accuracy", "Balanced accuracy"]
-    values = [accuracy_score(y_true, y_pred), balanced_accuracy_score(y_true, y_pred)]
+def classification_metrics(model: Any, X_test: pd.DataFrame, y_true: pd.Series, y_pred: np.ndarray) -> dict[str, float]:
+    metrics = {
+        "Accuracy": accuracy_score(y_true, y_pred),
+        "Balanced Accuracy": balanced_accuracy_score(y_true, y_pred)
+    }
     if hasattr(model, "predict_proba"):
         try:
             proba = model.predict_proba(X_test)
-            values.append(log_loss(y_true, proba, labels=model.classes_))
-            names.append("Log loss")
+            metrics["Log Loss"] = log_loss(y_true, proba, labels=model.classes_)
         except Exception:
             pass
-    return pd.DataFrame({"Metric": names, "Value": values})
+    return metrics
 
 
-def add_prediction_columns(model: Any, X_pred: pd.DataFrame, base: pd.DataFrame, task: str) -> pd.DataFrame:
-    out = base.copy()
-    pred = model.predict(X_pred)
-    out["prediction"] = pred
-    if task == "Classification" and hasattr(model, "predict_proba"):
-        try:
-            proba = model.predict_proba(X_pred)
-            for idx, label in enumerate(model.classes_):
-                out[f"prob_{label}"] = proba[:, idx]
-        except Exception:
-            pass
-    return out
+def plot_regression(y_true: np.ndarray, preds_dict: dict[str, np.ndarray], target_name: str) -> plt.Figure:
+    """Generates a scatter plot comparing actual vs predicted values for all models."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    markers = ['o', 'X', 's']
+    colors = sns.color_palette("husl", len(preds_dict))
+
+    for (model_name, y_pred), marker, color in zip(preds_dict.items(), markers, colors):
+        r2 = r2_score(y_true, y_pred)
+        sns.scatterplot(
+            x=y_true, y=y_pred, 
+            label=f'{model_name} (R2={r2:.3f})', 
+            marker=marker, color=color, s=70, alpha=0.7, ax=ax
+        )
+
+    # Plot perfect prediction diagonal line
+    all_vals = np.concatenate([y_true] + list(preds_dict.values()))
+    min_val, max_val = all_vals.min(), all_vals.max()
+    ax.plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--', label='Perfect Prediction')
+
+    ax.set_xlabel("Actual Values")
+    ax.set_ylabel("Predicted Values")
+    ax.set_title(f"Actual vs. Predicted Values ({target_name})")
+    ax.legend()
+    ax.grid(True)
+    return fig
+
+
+def plot_classification(y_true: np.ndarray, preds_dict: dict[str, np.ndarray], target_name: str) -> plt.Figure:
+    """Generates side-by-side confusion matrices for all models."""
+    n_models = len(preds_dict)
+    fig, axes = plt.subplots(1, n_models, figsize=(6 * n_models, 5))
+    if n_models == 1:
+        axes = [axes]
+    
+    cmaps = ['Blues', 'Oranges', 'Greens']
+
+    for ax, (model_name, y_pred), cmap in zip(axes, preds_dict.items(), cmaps):
+        acc = accuracy_score(y_true, y_pred)
+        cm = confusion_matrix(y_true, y_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap=cmap, ax=ax)
+        ax.set_title(f"{model_name} (Accuracy: {acc:.3f})")
+        ax.set_xlabel("Predicted Label")
+        ax.set_ylabel("True Label")
+
+    plt.tight_layout()
+    return fig
 
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
-    st.caption("A lightweight workbench for testing tabular models. Current backend: TabICLv2.")
+    st.caption("A lightweight workbench for testing and comparing tabular models (TabFM & TabICLv2).")
 
     with st.sidebar:
         st.subheader("Environment")
+        st.text(f"tabfm: {package_version('tabfm')}")
         st.text(f"tabicl: {package_version('tabicl')}")
         st.text(f"streamlit: {package_version('streamlit')}")
         st.text(f"torch: {torch.__version__}")
@@ -160,21 +225,42 @@ def main() -> None:
             st.success(f"GPU: {torch.cuda.get_device_name(0)}")
         else:
             st.warning("CUDA GPU is not available to PyTorch.")
-        st.text(f"scikit-learn: {package_version('scikit-learn')}")
-        st.text(f"pandas: {package_version('pandas')}")
+        
         st.divider()
-        st.subheader("Model settings")
+        st.subheader("General Settings")
+        
+        execution_mode = st.radio(
+            "Execution Mode", 
+            ["TabFM Only", "TabICLv2 Only", "Compare Both"], 
+            index=2,
+            help="Select the backend model(s) to evaluate."
+        )
+        
         task = st.radio("Task", ["Regression", "Classification"], index=0)
         device = st.selectbox("Device", ["auto", "cpu", "cuda", "mps"], index=0)
-        n_estimators = st.slider("Ensemble size", min_value=1, max_value=32, value=DEFAULT_N_ESTIMATORS)
-        batch_size = st.slider("Batch size", min_value=1, max_value=32, value=DEFAULT_BATCH_SIZE)
-        kv_cache = st.checkbox("Enable KV cache", value=False)
         random_state = st.number_input("Random state", min_value=0, value=DEFAULT_RANDOM_STATE, step=1)
-        model_path = st.text_input("Local checkpoint path", value="", placeholder="Blank = auto-download")
+        
+        # Determine active models based on execution mode
+        if execution_mode == "TabFM Only":
+            active_models = ["TabFM"]
+        elif execution_mode == "TabICLv2 Only":
+            active_models = ["TabICLv2"]
+        else:
+            active_models = ["TabFM", "TabICLv2"]
 
-    train_file = st.file_uploader("Training CSV", type=["csv"], key="train_csv")
+        # TabICL specific advanced settings
+        n_estimators, batch_size, kv_cache, model_path = DEFAULT_N_ESTIMATORS, DEFAULT_BATCH_SIZE, False, ""
+        if "TabICLv2" in active_models:
+            with st.expander("TabICLv2 Advanced Settings", expanded=False):
+                n_estimators = st.slider("Ensemble size", min_value=1, max_value=32, value=DEFAULT_N_ESTIMATORS)
+                batch_size = st.slider("Batch size", min_value=1, max_value=32, value=DEFAULT_BATCH_SIZE)
+                kv_cache = st.checkbox("Enable KV cache", value=False)
+                model_path = st.text_input("Local checkpoint path", value="", placeholder="Blank = auto-download")
+
+    # Upload Training Data
+    train_file = st.file_uploader("Dataset CSV", type=["csv"], key="train_csv")
     if train_file is None:
-        st.info("Upload a training CSV to begin.")
+        st.info("Upload a CSV dataset to begin.")
         return
 
     try:
@@ -184,14 +270,15 @@ def main() -> None:
         return
 
     if df.empty or df.shape[1] < 2:
-        st.error("The training CSV must contain at least one row and two columns.")
+        st.error("The CSV must contain at least one row and two columns.")
         return
     if df.columns.duplicated().any():
         st.error("Duplicate column names are not supported. Rename duplicate columns first.")
         return
 
-    st.subheader("Training data")
+    st.subheader("Data Preview")
     st.dataframe(df.head(100), use_container_width=True)
+    
     c1, c2, c3 = st.columns(3)
     c1.metric("Rows", f"{len(df):,}")
     c2.metric("Columns", f"{df.shape[1]:,}")
@@ -199,13 +286,14 @@ def main() -> None:
 
     if len(df) < MIN_RECOMMENDED_ROWS:
         st.warning(
-            "TabICLv2 was pretrained on datasets with at least 300 training rows, and the official project "
-            "states that smaller datasets have not been tested. Results below 300 rows should be treated as experimental."
+            "These models are generally pretrained on datasets with at least 300 training rows. "
+            "Results on smaller datasets should be treated as experimental."
         )
 
+    # Feature Selection
     target = st.selectbox("Target column", list(df.columns), index=len(df.columns) - 1)
     candidate_excluded = [c for c in df.columns if c != target]
-    excluded = st.multiselect("Exclude feature columns", candidate_excluded, default=[])
+    excluded = st.multiselect("Exclude feature columns (e.g., IDs, Names)", candidate_excluded, default=[])
 
     try:
         X, y, dropped_target_rows = prepare_xy(df, target, excluded)
@@ -213,12 +301,11 @@ def main() -> None:
         st.error(str(exc))
         return
 
-    if dropped_target_rows:
-        st.warning(f"Dropped {dropped_target_rows} rows with missing target values.")
     if len(X) < 5:
-        st.error("At least 5 rows with a non-missing target are required for this quick evaluation app.")
+        st.error("At least 5 rows with a non-missing target are required.")
         return
 
+    # Target Validation
     if task == "Regression":
         y_numeric = pd.to_numeric(y, errors="coerce")
         invalid = int(y_numeric.isna().sum())
@@ -231,70 +318,87 @@ def main() -> None:
         if n_classes < 2:
             st.error("Classification requires at least two target classes.")
             return
-        st.caption(f"Classes: {n_classes}")
+        st.caption(f"Detected Classes: {n_classes}")
 
     st.caption(f"Features used: {X.shape[1]}")
 
-    tab_eval, tab_predict = st.tabs(["Holdout evaluation", "Predict new rows"])
+    tab_eval, tab_predict, tab_impute = st.tabs(["Holdout Evaluation", "Predict New Rows", "Impute Missing Values"])
 
+    # ---------------------------------------------------------
+    # TAB 1: Holdout Evaluation
+    # ---------------------------------------------------------
     with tab_eval:
-        test_size = st.slider("Test fraction", min_value=0.1, max_value=0.5, value=DEFAULT_TEST_SIZE, step=0.05)
-        if st.button("Run holdout evaluation", type="primary", use_container_width=True):
+        if dropped_target_rows:
+            st.info(f"Note: {dropped_target_rows} rows with missing target values were ignored for this evaluation.")
+            
+        test_size = st.slider("Test fraction", min_value=0.05, max_value=0.5, value=DEFAULT_TEST_SIZE, step=0.05)
+        
+        if st.button("Run Holdout Evaluation", type="primary", use_container_width=True):
             stratify = safe_stratify(y, test_size) if task == "Classification" else None
             if task == "Classification" and stratify is None:
                 st.warning("A stratified split was not possible; using a random split instead.")
+            
             X_train, X_test, y_train, y_test = train_test_split(
-                X,
-                y,
-                test_size=test_size,
-                random_state=int(random_state),
-                stratify=stratify,
+                X, y, test_size=test_size, random_state=int(random_state), stratify=stratify
             )
-            model = build_model(
-                task=task,
-                n_estimators=n_estimators,
-                batch_size=batch_size,
-                kv_cache=kv_cache,
-                device=device,
-                random_state=int(random_state),
-                model_path=model_path,
-            )
-            try:
-                with st.spinner("Running TabICLv2..."):
-                    model.fit(X_train, y_train)
-                    y_pred = model.predict(X_test)
-            except Exception as exc:
-                st.exception(exc)
-                return
+            
+            preds_dict = {}
+            metrics_dict = {}
+            
+            for model_name in active_models:
+                try:
+                    with st.spinner(f"Running {model_name}..."):
+                        model = build_model(
+                            model_name=model_name, task=task, device=device, random_state=int(random_state),
+                            n_estimators=n_estimators, batch_size=batch_size, 
+                            kv_cache=kv_cache, model_path=model_path
+                        )
+                        model.fit(X_train, y_train)
+                        y_pred = model.predict(X_test)
+                        preds_dict[model_name] = y_pred
+                        
+                        if task == "Regression":
+                            metrics_dict[model_name] = regression_metrics(y_test, y_pred)
+                        else:
+                            metrics_dict[model_name] = classification_metrics(model, X_test, y_test, y_pred)
+                
+                except Exception as exc:
+                    st.error(f"Error encountered while running {model_name}.")
+                    st.exception(exc)
+                    return
 
+            st.subheader("Evaluation Metrics")
+            metrics_df = pd.DataFrame(metrics_dict).round(4)
+            st.dataframe(metrics_df, use_container_width=True)
+
+            st.subheader("Visual Analysis")
             if task == "Regression":
-                metrics = regression_metrics(y_test, y_pred)
-                st.dataframe(metrics, hide_index=True, use_container_width=True)
-                eval_df = pd.DataFrame({"actual": np.asarray(y_test), "predicted": y_pred})
-                st.scatter_chart(eval_df, x="actual", y="predicted", use_container_width=True)
+                fig = plot_regression(np.asarray(y_test), preds_dict, target)
+                st.pyplot(fig)
             else:
-                metrics = classification_metrics(model, X_test, y_test, y_pred)
-                st.dataframe(metrics, hide_index=True, use_container_width=True)
-                labels = list(model.classes_) if hasattr(model, "classes_") else sorted(pd.unique(y))
-                cm = confusion_matrix(y_test, y_pred, labels=labels)
-                cm_df = pd.DataFrame(cm, index=[f"actual_{x}" for x in labels], columns=[f"pred_{x}" for x in labels])
-                st.dataframe(cm_df, use_container_width=True)
+                fig = plot_classification(np.asarray(y_test), preds_dict, target)
+                st.pyplot(fig)
 
             result_df = X_test.copy()
             result_df[target] = np.asarray(y_test)
-            result_df["prediction"] = y_pred
+            for m_name, y_pred in preds_dict.items():
+                result_df[f"Prediction_{m_name}"] = y_pred
+            
             st.download_button(
-                "Download evaluation predictions",
+                "Download Evaluation Predictions",
                 data=csv_bytes(result_df),
-                file_name="tabtester_evaluation.csv",
+                file_name="tabtester_holdout_evaluation.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
 
+    # ---------------------------------------------------------
+    # TAB 2: Predict New Rows
+    # ---------------------------------------------------------
     with tab_predict:
         pred_file = st.file_uploader("Prediction CSV", type=["csv"], key="pred_csv")
         if pred_file is None:
-            st.info("Upload a CSV containing the same feature columns used for training.")
+            st.info("Upload a CSV containing the same feature columns used for training to predict new rows.")
         else:
             try:
                 pred_df = read_csv(pred_file)
@@ -309,41 +413,116 @@ def main() -> None:
             else:
                 extra = [c for c in pred_df.columns if c not in required]
                 if extra:
-                    st.caption(f"Extra columns will be preserved but not used as features: {extra}")
+                    st.caption(f"Extra columns detected (will be ignored during prediction): {extra}")
+                
                 st.dataframe(pred_df.head(100), use_container_width=True)
 
-                if st.button("Fit full data and predict", type="primary", use_container_width=True):
-                    model = build_model(
-                        task=task,
-                        n_estimators=n_estimators,
-                        batch_size=batch_size,
-                        kv_cache=kv_cache,
-                        device=device,
-                        random_state=int(random_state),
-                        model_path=model_path,
-                    )
-                    try:
-                        with st.spinner("Fitting context and predicting..."):
-                            model.fit(X, y)
-                            out = add_prediction_columns(model, pred_df[required].copy(), pred_df, task)
-                    except Exception as exc:
-                        st.exception(exc)
-                        return
+                if st.button("Fit Full Data and Predict", type="primary", use_container_width=True):
+                    out_df = pred_df.copy()
+                    
+                    for model_name in active_models:
+                        try:
+                            with st.spinner(f"Fitting {model_name} context and predicting..."):
+                                model = build_model(
+                                    model_name=model_name, task=task, device=device, random_state=int(random_state),
+                                    n_estimators=n_estimators, batch_size=batch_size, 
+                                    kv_cache=kv_cache, model_path=model_path
+                                )
+                                model.fit(X, y)
+                                
+                                X_pred = pred_df[required].copy()
+                                pred = model.predict(X_pred)
+                                out_df[f"Prediction_{model_name}"] = pred
+                                
+                                if task == "Classification" and hasattr(model, "predict_proba"):
+                                    try:
+                                        proba = model.predict_proba(X_pred)
+                                        for idx, label in enumerate(model.classes_):
+                                            out_df[f"Prob_{model_name}_{label}"] = proba[:, idx]
+                                    except Exception:
+                                        pass
+                                        
+                        except Exception as exc:
+                            st.error(f"Error encountered while running {model_name}.")
+                            st.exception(exc)
+                            return
 
                     st.success("Prediction complete.")
-                    st.dataframe(out.head(200), use_container_width=True)
+                    st.dataframe(out_df.head(200), use_container_width=True)
                     st.download_button(
-                        "Download predictions",
-                        data=csv_bytes(out),
-                        file_name="tabtester_predictions.csv",
+                        "Download Predictions",
+                        data=csv_bytes(out_df),
+                        file_name="tabtester_new_predictions.csv",
                         mime="text/csv",
                         use_container_width=True,
                     )
 
+    # ---------------------------------------------------------
+    # TAB 3: Impute Missing Values
+    # ---------------------------------------------------------
+    with tab_impute:
+        st.subheader("Impute Missing Values")
+        
+        missing_mask = df[target].isna()
+        missing_count = int(missing_mask.sum())
+        
+        if missing_count == 0:
+            st.info(f"The selected target column '{target}' has no missing values to impute.")
+        else:
+            st.write(f"**{missing_count}** missing values detected in '{target}'.")
+            st.caption(
+                "The model will use the rows without missing values as context (training data) "
+                "to predict and fill the missing values in this column."
+            )
+            
+            if st.button("Run Imputation", type="primary", use_container_width=True):
+                out_df = df.copy()
+                
+                # Features for the missing rows (drop target and excluded columns)
+                X_missing = df.loc[missing_mask].drop(columns=[target] + excluded)
+                
+                for model_name in active_models:
+                    try:
+                        with st.spinner(f"Fitting {model_name} context and imputing..."):
+                            model = build_model(
+                                model_name=model_name, task=task, device=device, random_state=int(random_state),
+                                n_estimators=n_estimators, batch_size=batch_size, 
+                                kv_cache=kv_cache, model_path=model_path
+                            )
+                            # Train on the clean data (X, y prepared earlier)
+                            model.fit(X, y)
+                            
+                            # Predict for the missing rows
+                            preds = model.predict(X_missing)
+                            
+                            # Create a new column with original data, replacing NaNs with predictions
+                            imputed_col = f"{target}_imputed_by_{model_name}"
+                            out_df[imputed_col] = out_df[target]
+                            out_df.loc[missing_mask, imputed_col] = preds
+                                    
+                    except Exception as exc:
+                        st.error(f"Error encountered while running {model_name}.")
+                        st.exception(exc)
+                        return
+
+                st.success("Imputation complete.")
+                
+                st.write("Preview of Imputed Rows:")
+                display_cols = [target] + [f"{target}_imputed_by_{m}" for m in active_models]
+                st.dataframe(out_df.loc[missing_mask, display_cols].head(100), use_container_width=True)
+                
+                st.download_button(
+                    "Download Imputed Dataset",
+                    data=csv_bytes(out_df),
+                    file_name="tabtester_imputed.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+
     st.divider()
     st.caption(
-        "The first TabICLv2 run downloads the public checkpoint unless a local checkpoint path is provided. "
-        "For repeated internal use, pre-downloading the checkpoint can avoid external network access at runtime."
+        "Note: TabFM relies on a foundational model with frozen weights, processing numeric and categorical data "
+        "without requiring explicit encoding or imputation. TabICLv2 also supports in-context learning with similar properties."
     )
 
 
