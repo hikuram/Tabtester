@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.env
+.DS_Store
+ag_temp_model/
+AutogluonModels/
+models/
+cache/
+*.log
+
+catboost_info/

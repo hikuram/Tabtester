@@ -1,42 +1,51 @@
 # Tabtester
 
-Tabtester is a lightweight Streamlit workbench for quickly evaluating tabular machine-learning models.
-The current backend is TabICLv2. The project is intentionally small and is expected to expand with additional models, evaluation methods, and comparison tools over time.
+Tabtester is a Streamlit workbench for comparing tabular foundation models with classical machine-learning baselines on the same CSV dataset.
 
-## Current features
+The project currently supports regression and classification, holdout benchmarking, prediction of new rows, and missing-target imputation. The backend interface is intentionally small so additional tabular models can be added later without expanding the Streamlit app into model-specific branches.
 
-- Upload a training CSV.
-- Select the target column and exclude ID-like columns.
-- Run regression or classification with TabICLv2.
-- Run a simple holdout evaluation.
-- Predict rows from a second CSV.
-- Use CPU or CUDA inference.
-- Display the detected PyTorch/CUDA environment.
-- Use a local checkpoint path for offline or internal environments.
-- Read UTF-8, UTF-8 with BOM, and CP932 CSV files.
-- Export UTF-8 with BOM CSV files for convenient Excel use.
+## Current backends
 
-## Recommended deployment: NGC PyTorch + Docker Compose
+- TabICLv2
+- TabFM using the PyTorch backend
+- XGBoost
+- LightGBM
+- CatBoost
+- Tuned XGBoost with Optuna
+- FLAML
+- AutoGluon Tabular when installed separately
 
-The default base image is:
+## Important TabFM license notice
+
+Tabtester itself is MIT licensed. That does not change the licenses of third-party packages or pretrained weights.
+
+The TabFM source code is Apache-2.0, but the default pretrained TabFM weights are distributed under a separate non-commercial, non-production license. Tabtester therefore:
+
+- does not bundle TabFM weights;
+- shows a license warning before TabFM execution;
+- requires an explicit acknowledgement in the UI before the default TabFM weights can be used;
+- requires `--accept-tabfm-license` before the warmup script downloads TabFM weights.
+
+Review the upstream TabFM weight license before use. A separately licensed local TabFM checkpoint can be supplied with `TABFM_CHECKPOINT_PATH`.
+
+## Docker with NVIDIA NGC
+
+The default image is:
 
 ```text
-nvcr.io/nvidia/pytorch:24.12-py3
+nvcr.io/nvidia/pytorch:26.05-py3
 ```
 
-The container keeps the CUDA/PyTorch stack provided by the NVIDIA NGC image and installs TabICL and Streamlit on top.
-You can change the base image through `BASE_IMAGE` in `.env` without editing the Dockerfile.
+This image provides the PyTorch/CUDA stack. Tabtester does not reinstall PyTorch in the NGC image.
 
-### Host requirements
+Requirements on the host:
 
-- Linux host with an NVIDIA GPU
 - Docker Engine with Docker Compose
-- NVIDIA GPU driver compatible with the selected NGC image
-- NVIDIA Container Toolkit configured for Docker
+- NVIDIA driver compatible with the CUDA version in the selected NGC image
+- NVIDIA Container Toolkit
+- NGC access for pulling `nvcr.io/nvidia/pytorch`
 
-A separate CUDA Toolkit installation on the host is not required for this container.
-
-### Build and start
+Create the local environment file and start the app:
 
 ```bash
 cp .env.example .env
@@ -50,15 +59,7 @@ Open:
 http://localhost:8501
 ```
 
-Stop the service with:
-
-```bash
-docker compose down
-```
-
-### GPU access
-
-The Compose file requests all NVIDIA GPUs with:
+The Compose GPU reservation is:
 
 ```yaml
 deploy:
@@ -70,69 +71,113 @@ deploy:
           capabilities: [gpu]
 ```
 
-Verify GPU access inside the running container:
+Check the container GPU environment:
 
 ```bash
 docker compose exec tabtester python scripts/check_gpu.py
 ```
 
-You should see `cuda_available=True` and at least one GPU name.
+## Model checkpoint cache
 
-## Checkpoint cache and offline use
+Hugging Face data is stored in a named Docker volume:
 
-The Hugging Face cache is stored in the named Docker volume `tabtester_hf_cache`, so rebuilding the application image does not normally require downloading the checkpoints again.
-
-Pre-download the TabICLv2 checkpoints while external network access is available:
-
-```bash
-docker compose run --rm tabtester python scripts/warmup_models.py
+```text
+tabtester_hf_cache
 ```
 
-After the cache is populated, set the following in `.env` for offline operation:
+Warm only TabICLv2 checkpoints:
+
+```bash
+docker compose run --rm tabtester python scripts/warmup_models.py --model tabicl
+```
+
+Warm both TabICLv2 and the default TabFM checkpoints after reviewing the TabFM weight license:
+
+```bash
+docker compose run --rm tabtester \
+  python scripts/warmup_models.py --model all --accept-tabfm-license
+```
+
+After all required checkpoints are cached, offline Hub access can be requested in `.env`:
 
 ```text
 HF_HUB_OFFLINE=1
 ```
 
-Then restart the service.
+## Local Python installation
 
-## GPU-oriented settings
-
-For a modest GPU, a practical starting point is:
-
-- Ensemble size: 8
-- Batch size: 4
-- Device: auto or cuda
-- KV cache: off for one-off evaluation
-
-If GPU memory is tight, reduce the batch size to 1 or 2 first. Reducing the ensemble size to 4 can also improve responsiveness.
-KV cache can be useful when repeatedly predicting new rows against the same training table, at the cost of additional memory.
-
-## Native Python alternative
-
-Python 3.10 or newer is required by the current TabICL dependency.
+Docker is the recommended GPU path. A local environment can be created with:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -U pip
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Project status and roadmap
+GPU-enabled local PyTorch installation may require a platform-specific PyTorch package/index. The Docker image avoids most CUDA/PyTorch version matching work.
 
+## Using the app
 
-## Notes
+1. Upload a CSV file.
+2. Choose the target column and optional excluded columns such as IDs.
+3. Select regression or classification.
+4. Select models in the sidebar.
+5. Run the holdout benchmark.
+6. Compare accuracy/error metrics, execution time, and prediction plots.
+7. Use `Predict New Rows` to train one backend on all labeled rows and predict another CSV.
+8. Use `Impute Missing Target` to predict missing values in the selected target with a foundation-model backend.
 
-- `requirements-ngc.txt` intentionally does not install PyTorch. The PyTorch build supplied by the NGC base image is preserved.
-- The first TabICL fit downloads its pretrained checkpoint unless it is already cached or a local checkpoint path is supplied.
-- Very small datasets should be validated carefully. Benchmark performance does not guarantee accuracy for a specific dataset or domain.
+For regression the report includes R2, RMSE, and MAE. For classification it includes Accuracy, Balanced Accuracy, and Log Loss when probabilities and class labels are available.
+
+## Foundation-model notes
+
+TabICLv2 exposes device, ensemble count, batch size, AMP, KV-cache, and offload settings through Tabtester. Very small datasets are still worth testing, but TabICLv2 was pretrained on datasets starting around 300 rows, so results below that size should be validated empirically.
+
+TabFM uses a bounded in-context window. Its estimators default to a limited number of context rows and features, so larger tables are sampled internally rather than consumed as one unlimited context. TabFM v1.0.0 classification supports at most 10 classes.
+
+## Repository structure
+
+```text
+Tabtester/
+├── app.py
+├── tabtester/
+│   ├── plotting.py
+│   ├── utils.py
+│   └── backends/
+│       ├── base.py
+│       ├── foundation.py
+│       ├── registry.py
+│       └── traditional.py
+├── scripts/
+│   ├── check_gpu.py
+│   └── warmup_models.py
+├── tests/
+├── Dockerfile
+├── compose.yaml
+├── requirements-ngc.txt
+├── requirements.txt
+├── requirements-autogluon.txt
+├── THIRD_PARTY.md
+└── LICENSE
+```
+
+## Adding another backend
+
+A backend implements the `ModelBackend` interface in `tabtester/backends/base.py` and is registered in `tabtester/backends/registry.py`. The Streamlit benchmark, prediction, and metric code then uses the common interface.
+
+## Tests
+
+The repository includes lightweight tests that do not download foundation-model checkpoints:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## License
 
-Tabtester source code is released under the MIT License. See [LICENSE](LICENSE).
+Tabtester source code is available under the MIT License.
 
 Copyright (c) 2026 Tabtester contributors.
 
-Third-party libraries, model implementations, pretrained weights, container images, and other dependencies remain subject to their own licenses and terms. The Tabtester MIT License does not relicense those third-party components. Review the applicable upstream terms before redistribution or commercial use.
+See `THIRD_PARTY.md` for third-party licensing notes.
