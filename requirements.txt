@@ -2,7 +2,14 @@ streamlit>=1.59.2
 tabicl>=2.1.1
 tabfm>=1.0.1
 pandas
-scikit-learn
+scikit-learn>=1.6.0
 numpy
 matplotlib
 seaborn
+xgboost>=2.0.0
+lightgbm>=4.0.0
+catboost>=1.2.0
+optuna>=3.0.0
+flaml>=2.0.0
+shap>=0.40.0
+# autogluon.tabular  # Uncomment if you want to include AutoGluon (heavy)
