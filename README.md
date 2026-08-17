@@ -143,12 +143,12 @@ GPU-enabled local PyTorch installation may require a platform-specific PyTorch p
 ## Using the app
 
 1. Upload a CSV file.
-2. Review columns excluded from target selection because they contain missing values, then choose a complete target column and optional excluded columns such as IDs.
+2. Review columns excluded from target selection because they contain missing values, then choose one or more complete target columns and optional excluded columns such as IDs. All selected target columns are removed from the feature set for every benchmark target to reduce target leakage.
 3. Select regression or classification.
 4. Select models with the individual sidebar toggles; unavailable backends remain visible but disabled.
-5. Run the holdout benchmark.
-6. Compare accuracy/error metrics, execution time, and prediction plots.
-7. Use `Predict New Rows` to train one backend on all labeled rows and predict another CSV.
+5. Run the holdout benchmark. Selected targets are processed sequentially; a failed model or target does not stop the remaining targets.
+6. Review the benchmark overview, then open target results in completion-order pages to compare metrics, execution time, prediction plots, and per-model errors.
+7. Use `Predict New Rows` to choose one of the selected benchmark targets, train one backend on all labeled rows, and predict another CSV using the same leakage-safe feature set.
 8. Use `Impute Missing Target` to predict missing values in the selected target with a foundation-model backend. The selected target is filled in place, while its pre-imputation values are preserved in an adjacent `<target>__original` backup column (or a numbered variant if that name already exists).
 
 For regression the report includes R2, RMSE, and MAE. For classification it includes Accuracy, Balanced Accuracy, and Log Loss when probabilities and class labels are available.

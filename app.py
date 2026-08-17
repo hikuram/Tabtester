@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
+import io
 import os
 import time
 from typing import Any
@@ -27,6 +29,7 @@ from tabtester.utils import (
     csv_bytes,
     impute_with_backup,
     missing_column_summary,
+    prepare_benchmark_target,
     read_csv,
     regression_metrics,
     safe_stratify,
@@ -164,6 +167,163 @@ def render_time_plot(results: pd.DataFrame) -> None:
     plt.close(fig)
 
 
+def figure_png_bytes(fig) -> bytes:
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return buffer.getvalue()
+
+
+def benchmark_overview(outputs: list[dict[str, Any]], task: str) -> pd.DataFrame:
+    metric = "R2" if task == "Regression" else "Accuracy"
+    rows: list[dict[str, Any]] = []
+    for order, output in enumerate(outputs, start=1):
+        results = output.get("results")
+        best_model = ""
+        best_score: float | None = None
+        if isinstance(results, pd.DataFrame) and not results.empty and metric in results.columns:
+            best_index = results[metric].astype(float).idxmax()
+            best_model = str(results.loc[best_index, "Model"])
+            best_score = float(results.loc[best_index, metric])
+
+        model_errors = output.get("model_errors", {})
+        error_text = output.get("error", "")
+        if model_errors:
+            model_error_text = "; ".join(f"{name}: {message}" for name, message in model_errors.items())
+            error_text = "; ".join(part for part in [error_text, model_error_text] if part)
+
+        rows.append(
+            {
+                "Order": order,
+                "Target": output.get("target", ""),
+                "Status": output.get("status", ""),
+                "Best model": best_model,
+                f"Best {metric}": best_score,
+                "Models completed": output.get("completed_models", 0),
+                "Models requested": output.get("requested_models", 0),
+                "Errors": error_text,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def safe_filename_component(value: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in value)
+    return cleaned or "target"
+
+
+def render_benchmark_target_result(
+    output: dict[str, Any],
+    task: str,
+    source_df: pd.DataFrame,
+) -> None:
+    target = str(output["target"])
+    status = str(output.get("status", ""))
+    st.markdown(f"### Target: {target}")
+    st.caption(f"Status: {status}")
+
+    results_df = output.get("results")
+    if not isinstance(results_df, pd.DataFrame) or results_df.empty:
+        st.error(str(output.get("error") or "No model completed successfully for this target."))
+        model_errors = output.get("model_errors", {})
+        if model_errors:
+            with st.expander("Model errors", expanded=True):
+                for model_name, message in model_errors.items():
+                    st.error(f"{model_name}: {message}")
+        return
+
+    st.subheader("Integrated report")
+    st.dataframe(results_df.style.format(precision=4), use_container_width=True)
+    col_metric, col_time = st.columns(2)
+    with col_metric:
+        render_primary_metric_plot(results_df, task)
+    with col_time:
+        render_time_plot(results_df)
+
+    predictions = output["predictions"]
+    y_test = output["y_test"]
+    st.subheader("Detailed visual analysis")
+    if task == "Regression":
+        detail_fig = plot_regression(y_test, predictions, target)
+    else:
+        detail_fig = plot_classification(y_test, predictions, target)
+    st.pyplot(detail_fig)
+    plt.close(detail_fig)
+
+    shap_image = output.get("shap_image")
+    shap_name = output.get("shap_name")
+    if shap_image is not None:
+        st.subheader(f"Feature importance via SHAP: {shap_name}")
+        st.image(io.BytesIO(shap_image), use_container_width=True)
+
+    model_errors = output.get("model_errors", {})
+    if model_errors:
+        with st.expander("Model errors", expanded=False):
+            for model_name, message in model_errors.items():
+                st.error(f"{model_name}: {message}")
+
+    result_df = source_df.loc[output["test_index"], output["feature_columns"]].copy()
+    result_df[f"Actual_{target}"] = np.asarray(y_test)
+    for model_name, pred in predictions.items():
+        result_df[f"Pred_{model_name}"] = pred
+    safe_target = safe_filename_component(target)
+    st.download_button(
+        "Download benchmark predictions",
+        data=csv_bytes(result_df),
+        file_name=f"tabtester_benchmark_predictions_{safe_target}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"benchmark_download::{target}",
+    )
+
+
+def set_benchmark_result_page(page: int) -> None:
+    st.session_state["benchmark_result_page"] = page
+
+
+def render_benchmark_results(
+    outputs: list[dict[str, Any]],
+    task: str,
+    source_df: pd.DataFrame,
+) -> None:
+    if not outputs:
+        return
+
+    st.subheader("Benchmark overview")
+    overview = benchmark_overview(outputs, task)
+    score_column = "Best R2" if task == "Regression" else "Best Accuracy"
+    formatters = {score_column: "{:.4f}"}
+    st.dataframe(overview.style.format(formatters, na_rep=""), hide_index=True, use_container_width=True)
+
+    page_options = list(range(len(outputs)))
+    if st.session_state.get("benchmark_result_page") not in page_options:
+        st.session_state["benchmark_result_page"] = 0
+    page = st.selectbox(
+        "Result page",
+        page_options,
+        format_func=lambda index: f"{index + 1} / {len(outputs)} - {outputs[index]['target']} [{outputs[index].get('status', '')}]",
+        key="benchmark_result_page",
+    )
+    col_previous, col_next = st.columns(2)
+    col_previous.button(
+        "Previous result",
+        disabled=page == 0,
+        use_container_width=True,
+        on_click=set_benchmark_result_page,
+        args=(page - 1,),
+        key="benchmark_previous_page",
+    )
+    col_next.button(
+        "Next result",
+        disabled=page == len(outputs) - 1,
+        use_container_width=True,
+        on_click=set_benchmark_result_page,
+        args=(page + 1,),
+        key="benchmark_next_page",
+    )
+    render_benchmark_target_result(outputs[page], task, source_df)
+
+
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
@@ -243,6 +403,7 @@ def main() -> None:
         st.info("Upload a CSV dataset to begin.")
         return
 
+    dataset_signature = hashlib.sha256(train_file.getvalue()).hexdigest()
     try:
         df = read_csv(train_file, ENABLE_JAPANESE_SUPPORT)
     except Exception as exc:
@@ -263,7 +424,7 @@ def main() -> None:
     missing_targets = missing_column_summary(df)
     if not missing_targets.empty:
         st.warning(
-            f"{len(missing_targets)} column(s) contain missing values and are excluded from Target column."
+            f"{len(missing_targets)} column(s) contain missing values and are excluded from Target columns."
         )
         st.dataframe(
             missing_targets.style.format({"Missing %": "{:.1f}%"}),
@@ -272,36 +433,28 @@ def main() -> None:
         )
 
     if not target_candidates:
-        st.error("No complete data column is available for Target column.")
+        st.error("No complete data column is available for Target columns.")
         return
 
-    target = st.selectbox(
-        "Target column",
+    benchmark_targets = st.multiselect(
+        "Target columns",
         target_candidates,
-        index=len(target_candidates) - 1,
-        help="Columns containing one or more missing values are excluded from this selector.",
+        default=[target_candidates[-1]],
+        help=(
+            "Select one or more complete target columns. Every selected target is removed "
+            "from the feature set for every benchmark target."
+        ),
     )
-    candidate_excluded = [column for column in df.columns if column != target]
-    excluded = st.multiselect("Exclude columns", candidate_excluded, default=[])
-
-    df_clean = df.copy()
-    X = df_clean.drop(columns=[target] + excluded)
-    y = df_clean[target].copy()
-    if X.shape[1] == 0:
-        st.error("No feature columns remain after exclusions.")
+    if not benchmark_targets:
+        st.error("Select at least one target column.")
         return
 
-    if task == "Regression":
-        y_numeric = pd.to_numeric(y, errors="coerce")
-        if y_numeric.isna().any():
-            st.error("Regression target contains non-numeric values.")
-            return
-        y = y_numeric
-    else:
-        st.caption(f"Classes: {y.nunique(dropna=False)}")
-        if y.nunique(dropna=False) < 2:
-            st.error("Classification requires at least two classes.")
-            return
+    candidate_excluded = [column for column in df.columns if column not in benchmark_targets]
+    excluded = st.multiselect("Exclude columns", candidate_excluded, default=[])
+    st.caption(
+        "Leakage guard: all selected target columns are excluded from the benchmark feature set, "
+        "regardless of which target is currently being evaluated."
+    )
 
     config = build_config(
         task,
@@ -324,157 +477,266 @@ def main() -> None:
     with tab_eval:
         st.markdown("### Model performance benchmark")
         st.caption(
+            "Targets are processed sequentially in the selected order. Results are stored as each target "
+            "finishes, and a failed target or model does not stop later targets."
+        )
+        st.caption(
             "Timing includes local model loading/preparation performed inside fit. "
             "When HF Hub is offline and checkpoints were prefetched into the image, network download time is zero."
         )
         test_size = st.slider("Test fraction", 0.05, 0.5, DEFAULT_TEST_SIZE, 0.05)
 
-        if "TabICLv2" in selected_models and len(X) < 300:
-            st.warning("TabICLv2 was pretrained on datasets starting around 300 rows; smaller datasets should be treated as an empirical test case.")
-        if "TabFM" in selected_models and len(X) > 100:
-            st.info("TabFM uses a bounded context window and samples context rows when the training table is larger than its configured context size.")
-        if task == "Classification" and "TabFM" in selected_models and y.nunique() > 10:
-            st.warning("TabFM v1.0.0 supports at most 10 classes and will not run for this target.")
+        if "TabICLv2" in selected_models and len(df) < 300:
+            st.warning(
+                "TabICLv2 was pretrained on datasets starting around 300 rows; smaller datasets "
+                "should be treated as an empirical test case."
+            )
+        if "TabFM" in selected_models and len(df) > 100:
+            st.info(
+                "TabFM uses a bounded context window and samples context rows when the training table "
+                "is larger than its configured context size."
+            )
+        if task == "Classification" and "TabFM" in selected_models:
+            oversized_targets = [
+                target
+                for target in benchmark_targets
+                if df[target].nunique(dropna=False) > 10
+            ]
+            if oversized_targets:
+                st.warning(
+                    "TabFM v1.0.0 supports at most 10 classes and may fail for: "
+                    + ", ".join(oversized_targets)
+                )
 
         if st.button("Run benchmark", type="primary", use_container_width=True):
             if not selected_models:
                 st.warning("Select at least one model.")
             elif validate_tabfm_use(selected_models, tabfm_ack, tabfm_checkpoint_path):
-                stratify = safe_stratify(y, test_size) if task == "Classification" else None
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X,
-                    y,
-                    test_size=test_size,
-                    random_state=random_state,
-                    stratify=stratify,
-                )
-
-                results: list[dict[str, Any]] = []
-                predictions: dict[str, np.ndarray] = {}
-                shap_payload = None
+                outputs: list[dict[str, Any]] = []
+                total_steps = max(1, len(benchmark_targets) * len(selected_models))
                 progress = st.progress(0.0, text="Running benchmark...")
+                live_overview = st.empty()
 
-                for index, model_name in enumerate(selected_models):
-                    progress.progress(index / len(selected_models), text=f"Processing {model_name}...")
-                    try:
-                        backend = make_backend(model_name, config)
-                        fit_start = time.perf_counter()
-                        backend.fit(X_train, y_train)
-                        fit_time = time.perf_counter() - fit_start
-
-                        predict_start = time.perf_counter()
-                        pred = np.asarray(backend.predict(X_test))
-                        probabilities = backend.predict_proba(X_test) if task == "Classification" else None
-                        predict_time = time.perf_counter() - predict_start
-                        predictions[model_name] = pred
-
-                        if task == "Regression":
-                            metrics = regression_metrics(y_test, pred)
-                        else:
-                            metrics = classification_metrics(
-                                y_test,
-                                pred,
-                                probabilities=probabilities,
-                                classes=backend.class_labels(),
-                            )
-                        row = {
-                            "Model": model_name,
-                            **metrics,
-                            "Fit Time (s)": fit_time,
-                            "Predict Time (s)": predict_time,
-                            "Total Time (s)": fit_time + predict_time,
-                        }
-                        results.append(row)
-
-                        if shap_payload is None and backend.supports_shap:
-                            payload = backend.shap_payload(X_test)
-                            if payload is not None:
-                                shap_payload = (model_name, *payload)
-                    except Exception as exc:
-                        st.error(f"{model_name}: {exc}")
-
-                progress.empty()
-                if results:
-                    results_df = pd.DataFrame(results)
-                    st.session_state["benchmark_output"] = {
-                        "results": results_df,
-                        "predictions": predictions,
-                        "y_test": np.asarray(y_test),
-                        "X_test": X_test.copy(),
+                for target_index, target in enumerate(benchmark_targets):
+                    target_output: dict[str, Any] = {
                         "target": target,
                         "task": task,
+                        "status": "Running",
+                        "requested_models": len(selected_models),
+                        "completed_models": 0,
+                        "model_errors": {},
                     }
+                    try:
+                        X_target, y_target = prepare_benchmark_target(
+                            df,
+                            target,
+                            benchmark_targets,
+                            excluded,
+                            task,
+                        )
+                        stratify = safe_stratify(y_target, test_size) if task == "Classification" else None
+                        X_train, X_test, y_train, y_test = train_test_split(
+                            X_target,
+                            y_target,
+                            test_size=test_size,
+                            random_state=random_state,
+                            stratify=stratify,
+                        )
 
-                    st.subheader("Integrated report")
-                    st.dataframe(results_df.style.format(precision=4), use_container_width=True)
-                    col_metric, col_time = st.columns(2)
-                    with col_metric:
-                        render_primary_metric_plot(results_df, task)
-                    with col_time:
-                        render_time_plot(results_df)
+                        results: list[dict[str, Any]] = []
+                        predictions: dict[str, np.ndarray] = {}
+                        model_errors: dict[str, str] = {}
+                        shap_image: bytes | None = None
+                        shap_name: str | None = None
 
-                    st.subheader("Detailed visual analysis")
-                    if task == "Regression":
-                        detail_fig = plot_regression(y_test, predictions, target)
-                    else:
-                        detail_fig = plot_classification(y_test, predictions, target)
-                    st.pyplot(detail_fig)
-                    plt.close(detail_fig)
+                        for model_index, model_name in enumerate(selected_models):
+                            step = target_index * len(selected_models) + model_index
+                            progress.progress(
+                                step / total_steps,
+                                text=(
+                                    f"Target {target_index + 1}/{len(benchmark_targets)}: {target} - "
+                                    f"{model_name}"
+                                ),
+                            )
+                            try:
+                                backend = make_backend(model_name, config)
+                                fit_start = time.perf_counter()
+                                backend.fit(X_train, y_train)
+                                fit_time = time.perf_counter() - fit_start
 
-                    if shap_payload is not None:
-                        shap_name, shap_model, shap_X = shap_payload
-                        st.subheader(f"Feature importance via SHAP: {shap_name}")
-                        shap_fig = generate_shap_plot(shap_model, shap_X, f"SHAP summary: {shap_name}")
-                        if shap_fig is not None:
-                            st.pyplot(shap_fig)
-                            plt.close(shap_fig)
+                                predict_start = time.perf_counter()
+                                pred = np.asarray(backend.predict(X_test))
+                                probabilities = (
+                                    backend.predict_proba(X_test)
+                                    if task == "Classification"
+                                    else None
+                                )
+                                predict_time = time.perf_counter() - predict_start
+                                predictions[model_name] = pred
 
-                    result_df = X_test.copy()
-                    result_df[f"Actual_{target}"] = np.asarray(y_test)
-                    for model_name, pred in predictions.items():
-                        result_df[f"Pred_{model_name}"] = pred
-                    st.download_button(
-                        "Download benchmark predictions",
-                        data=csv_bytes(result_df),
-                        file_name="tabtester_benchmark_predictions.csv",
-                        mime="text/csv",
+                                if task == "Regression":
+                                    metrics = regression_metrics(y_test, pred)
+                                else:
+                                    metrics = classification_metrics(
+                                        y_test,
+                                        pred,
+                                        probabilities=probabilities,
+                                        classes=backend.class_labels(),
+                                    )
+                                results.append(
+                                    {
+                                        "Model": model_name,
+                                        **metrics,
+                                        "Fit Time (s)": fit_time,
+                                        "Predict Time (s)": predict_time,
+                                        "Total Time (s)": fit_time + predict_time,
+                                    }
+                                )
+
+                                if shap_image is None and backend.supports_shap:
+                                    payload = backend.shap_payload(X_test)
+                                    if payload is not None:
+                                        shap_model, shap_X = payload
+                                        shap_fig = generate_shap_plot(
+                                            shap_model,
+                                            shap_X,
+                                            f"SHAP summary: {model_name} - {target}",
+                                        )
+                                        if shap_fig is not None:
+                                            shap_image = figure_png_bytes(shap_fig)
+                                            shap_name = model_name
+                            except Exception as exc:
+                                model_errors[model_name] = str(exc)
+
+                        results_df = pd.DataFrame(results)
+                        completed_models = len(results)
+                        if completed_models == 0:
+                            status = "Failed"
+                            error = "All selected models failed for this target."
+                        elif completed_models < len(selected_models):
+                            status = "Partial"
+                            error = ""
+                        else:
+                            status = "Done"
+                            error = ""
+
+                        target_output.update(
+                            {
+                                "status": status,
+                                "error": error,
+                                "results": results_df,
+                                "predictions": predictions,
+                                "y_test": np.asarray(y_test),
+                                "test_index": X_test.index.tolist(),
+                                "feature_columns": list(X_test.columns),
+                                "completed_models": completed_models,
+                                "model_errors": model_errors,
+                                "shap_image": shap_image,
+                                "shap_name": shap_name,
+                            }
+                        )
+                    except Exception as exc:
+                        target_output.update(
+                            {
+                                "status": "Failed",
+                                "error": str(exc),
+                                "results": pd.DataFrame(),
+                            }
+                        )
+
+                    outputs.append(target_output)
+                    st.session_state["benchmark_output"] = {
+                        "dataset_signature": dataset_signature,
+                        "targets": list(benchmark_targets),
+                        "excluded": list(excluded),
+                        "task": task,
+                        "outputs": outputs.copy(),
+                    }
+                    live_overview.dataframe(
+                        benchmark_overview(outputs, task),
+                        hide_index=True,
                         use_container_width=True,
                     )
+                    progress.progress(
+                        min(1.0, ((target_index + 1) * len(selected_models)) / total_steps),
+                        text=f"Completed target {target_index + 1}/{len(benchmark_targets)}: {target}",
+                    )
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                progress.empty()
+                live_overview.empty()
 
         stored = st.session_state.get("benchmark_output")
-        if stored and stored.get("target") == target and stored.get("task") == task:
-            with st.expander("Last benchmark result", expanded=False):
-                st.dataframe(stored["results"].style.format(precision=4), use_container_width=True)
+        if (
+            stored
+            and stored.get("dataset_signature") == dataset_signature
+            and stored.get("targets") == list(benchmark_targets)
+            and stored.get("excluded") == list(excluded)
+            and stored.get("task") == task
+        ):
+            render_benchmark_results(stored.get("outputs", []), task, df)
 
     with tab_predict:
         st.markdown("### Predict new rows")
+        if st.session_state.get("prediction_target") not in benchmark_targets:
+            st.session_state["prediction_target"] = benchmark_targets[0]
+        prediction_target = st.selectbox(
+            "Prediction target",
+            benchmark_targets,
+            key="prediction_target",
+            help="Prediction uses the same leakage-safe feature set as the benchmark.",
+        )
         predict_model = st.selectbox("Prediction model", available_models, key="predict_model")
-        new_file = st.file_uploader("Upload rows to predict (CSV)", type=["csv"], key="predict_file")
         if predict_model == "TabFM":
             st.warning(TABFM_LICENSE_NOTICE)
-        if new_file is not None:
+
+        try:
+            X_predict, y_predict = prepare_benchmark_target(
+                df,
+                prediction_target,
+                benchmark_targets,
+                excluded,
+                task,
+            )
+            prediction_setup_error = None
+            if task == "Classification":
+                st.caption(f"Classes: {y_predict.nunique(dropna=False)}")
+        except Exception as exc:
+            X_predict = None
+            y_predict = None
+            prediction_setup_error = str(exc)
+            st.error(f"Prediction target setup failed: {prediction_setup_error}")
+
+        new_file = st.file_uploader("Upload rows to predict (CSV)", type=["csv"], key="predict_file")
+        if new_file is not None and X_predict is not None:
             try:
                 new_df = read_csv(new_file, ENABLE_JAPANESE_SUPPORT)
-                new_features = align_feature_columns(new_df, list(X.columns))
+                new_features = align_feature_columns(new_df, list(X_predict.columns))
                 st.dataframe(new_df.head(100), use_container_width=True)
             except Exception as exc:
                 st.error(f"Prediction CSV error: {exc}")
                 new_features = None
 
-            if new_features is not None and st.button("Train on all labeled rows and predict", type="primary"):
+            if new_features is not None and st.button(
+                "Train on all labeled rows and predict",
+                type="primary",
+            ):
                 if validate_tabfm_use([predict_model], tabfm_ack, tabfm_checkpoint_path):
                     try:
                         backend = make_backend(predict_model, config)
                         with st.spinner(f"Fitting {predict_model} and predicting..."):
-                            backend.fit(X, y)
+                            backend.fit(X_predict, y_predict)
                             pred = np.asarray(backend.predict(new_features))
                         output = new_df.copy()
-                        output[f"Pred_{target}_{predict_model}"] = pred
+                        output[f"Pred_{prediction_target}_{predict_model}"] = pred
                         st.dataframe(output.head(100), use_container_width=True)
                         st.download_button(
                             "Download predictions",
                             data=csv_bytes(output),
-                            file_name="tabtester_predictions.csv",
+                            file_name=(
+                                f"tabtester_predictions_{safe_filename_component(prediction_target)}.csv"
+                            ),
                             mime="text/csv",
                         )
                     except Exception as exc:

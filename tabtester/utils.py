@@ -37,6 +37,41 @@ def complete_target_columns(df: pd.DataFrame) -> list[str]:
     return [str(column) for column in df.columns if not bool(missing[column])]
 
 
+def prepare_benchmark_target(
+    df: pd.DataFrame,
+    target: str,
+    benchmark_targets: list[str],
+    excluded: list[str],
+    task: str,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Prepare one benchmark target while excluding every selected target."""
+    if target not in df.columns:
+        raise ValueError(f"Target column not found: {target}")
+
+    drop_columns: list[str] = []
+    for column in [*benchmark_targets, *excluded]:
+        if column in df.columns and column not in drop_columns:
+            drop_columns.append(column)
+
+    X = df.drop(columns=drop_columns).copy()
+    if X.shape[1] == 0:
+        raise ValueError("No feature columns remain after target and column exclusions.")
+
+    y = df[target].copy()
+    if task == "Regression":
+        y_numeric = pd.to_numeric(y, errors="coerce")
+        if y_numeric.isna().any():
+            raise ValueError("Regression target contains non-numeric values.")
+        y = y_numeric
+    elif task == "Classification":
+        if y.nunique(dropna=False) < 2:
+            raise ValueError("Classification requires at least two classes.")
+    else:
+        raise ValueError(f"Unsupported task type: {task}")
+
+    return X, y
+
+
 def missing_column_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Summarize columns excluded from target selection due to missing values."""
     counts = df.isna().sum(axis=0)
