@@ -1,0 +1,13 @@
+.git
+.github
+__pycache__
+*.pyc
+.venv
+.env
+*.zip
+models
+cache
+AutogluonModels
+ag_temp_model
+
+catboost_info
