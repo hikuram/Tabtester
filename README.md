@@ -21,7 +21,7 @@ Tabtester itself is MIT licensed. That does not change the licenses of third-par
 
 The TabFM source code is Apache-2.0, but the default pretrained TabFM weights are distributed under a separate non-commercial, non-production license. Tabtester therefore:
 
-- does not bundle TabFM weights;
+- does not include TabFM weights in the source archive; an opt-in Docker build may embed them in the resulting image;
 - shows a license warning before TabFM execution;
 - requires an explicit acknowledgement in the UI before the default TabFM weights can be used;
 - requires `--accept-tabfm-license` before the warmup script downloads TabFM weights.
@@ -37,6 +37,16 @@ nvcr.io/nvidia/pytorch:26.05-py3
 ```
 
 This image provides the PyTorch/CUDA stack. Tabtester does not reinstall PyTorch in the NGC image.
+
+Japanese-specific compatibility is disabled by default. The default container does not install Noto CJK fonts and CSV input is limited to UTF-8/UTF-8 BOM.
+
+To enable Japanese support, set this in `.env` before building the image:
+
+```text
+ENABLE_JAPANESE_SUPPORT=1
+```
+
+When enabled, the Docker build installs Noto CJK fonts, Matplotlib prefers a Japanese-capable font, and CSV input also accepts CP932. Rebuild the image after changing this option because the font package is selected at build time.
 
 Requirements on the host:
 
@@ -77,32 +87,45 @@ Check the container GPU environment:
 docker compose exec tabtester python scripts/check_gpu.py
 ```
 
-## Model checkpoint cache
+## Foundation-model checkpoints and offline runtime
 
-Hugging Face data is stored in a named Docker volume:
+The benchmark timer starts immediately before `backend.fit(...)`. For the foundation-model backends, checkpoint acquisition or loading can happen inside `fit`, so an uncached first run can include network download time in `Fit Time (s)`. The recommended Docker workflow avoids that network component by downloading the requested checkpoints during image build and running the container with Hugging Face Hub offline mode enabled.
 
-```text
-tabtester_hf_cache
-```
-
-Warm only TabICLv2 checkpoints:
-
-```bash
-docker compose run --rm tabtester python scripts/warmup_models.py --model tabicl
-```
-
-Warm both TabICLv2 and the default TabFM checkpoints after reviewing the TabFM weight license:
-
-```bash
-docker compose run --rm tabtester \
-  python scripts/warmup_models.py --model all --accept-tabfm-license
-```
-
-After all required checkpoints are cached, offline Hub access can be requested in `.env`:
+The image stores its Hugging Face cache at:
 
 ```text
+/opt/tabtester/huggingface
+```
+
+This cache is part of the image rather than a host-mounted volume, so moving the built image to another compatible Docker host keeps the checkpoint files with it.
+
+By default the build prefetches TabICLv2 only, keeps Japanese-specific compatibility disabled, and runs offline:
+
+```text
+PREFETCH_FOUNDATION_MODELS=tabicl
+ACCEPT_TABFM_LICENSE=0
+ENABLE_JAPANESE_SUPPORT=0
 HF_HUB_OFFLINE=1
 ```
+
+To bake both TabICLv2 and the default TabFM regression/classification weights into the image, first review and accept the TabFM pretrained-weight license, then set:
+
+```text
+PREFETCH_FOUNDATION_MODELS=all
+ACCEPT_TABFM_LICENSE=1
+HF_HUB_OFFLINE=1
+```
+
+and build normally:
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+The build machine needs network access to the model sources. The running container does not: `HF_HUB_OFFLINE=1` is the default runtime setting. Classical backends such as XGBoost, LightGBM, CatBoost, FLAML, and tuned XGBoost do not use pretrained foundation-model checkpoints.
+
+`Fit Time (s)` still includes local checkpoint deserialization and model preparation performed by the backend. It excludes network transfer only when the required weights were prefetched successfully and runtime offline mode is enabled.
 
 ## Local Python installation
 
@@ -115,18 +138,18 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-GPU-enabled local PyTorch installation may require a platform-specific PyTorch package/index. The Docker image avoids most CUDA/PyTorch version matching work.
+GPU-enabled local PyTorch installation may require a platform-specific PyTorch package/index. The Docker image avoids most CUDA/PyTorch version matching work. For local Python execution, set `ENABLE_JAPANESE_SUPPORT=1` in the process environment if CP932 input and Japanese plot-font selection are needed; `.env` is consumed automatically by Docker Compose, not by the standalone Python command.
 
 ## Using the app
 
 1. Upload a CSV file.
-2. Choose the target column and optional excluded columns such as IDs.
+2. Review columns excluded from target selection because they contain missing values, then choose a complete target column and optional excluded columns such as IDs.
 3. Select regression or classification.
-4. Select models in the sidebar.
+4. Select models with the individual sidebar toggles; unavailable backends remain visible but disabled.
 5. Run the holdout benchmark.
 6. Compare accuracy/error metrics, execution time, and prediction plots.
 7. Use `Predict New Rows` to train one backend on all labeled rows and predict another CSV.
-8. Use `Impute Missing Target` to predict missing values in the selected target with a foundation-model backend.
+8. Use `Impute Missing Target` to predict missing values in the selected target with a foundation-model backend. The selected target is filled in place, while its pre-imputation values are preserved in an adjacent `<target>__original` backup column (or a numbered variant if that name already exists).
 
 For regression the report includes R2, RMSE, and MAE. For classification it includes Accuracy, Balanced Accuracy, and Log Loss when probabilities and class labels are available.
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from tabtester.backends.base import BackendConfig
-from tabtester.backends.registry import MODEL_SPECS
+from tabtester.backends.registry import MODEL_SPECS, registered_model_names
 
 
 class RegistryTest(unittest.TestCase):
@@ -15,6 +15,9 @@ class RegistryTest(unittest.TestCase):
         config = BackendConfig(task="Regression")
         self.assertEqual(config.device, "auto")
         self.assertEqual(config.tabicl_batch_size, 4)
+
+    def test_registered_model_names_preserve_registry_order(self):
+        self.assertEqual(registered_model_names(), [spec.name for spec in MODEL_SPECS])
 
 
 if __name__ == "__main__":

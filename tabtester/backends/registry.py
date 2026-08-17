@@ -42,6 +42,11 @@ def _module_available(module_name: str) -> bool:
         return False
 
 
+def registered_model_names() -> list[str]:
+    """Return all model backends exposed by the application."""
+    return [spec.name for spec in MODEL_SPECS]
+
+
 def available_model_names() -> list[str]:
     return [
         spec.name

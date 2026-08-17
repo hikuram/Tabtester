@@ -1,5 +1,5 @@
 from .base import BackendConfig, ModelBackend
-from .registry import available_model_names, foundation_model_names, make_backend
+from .registry import available_model_names, foundation_model_names, make_backend, registered_model_names
 
 __all__ = [
     "BackendConfig",
@@ -7,4 +7,5 @@ __all__ = [
     "available_model_names",
     "foundation_model_names",
     "make_backend",
+    "registered_model_names",
 ]

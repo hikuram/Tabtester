@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 
 import numpy as np
 import pandas as pd
@@ -24,28 +25,32 @@ def warm_tabicl(device: str) -> None:
     y_clf = pd.Series(np.where(X.iloc[:, 0] + X.iloc[:, 1] > 0, "A", "B"))
 
     print("Caching TabICLv2 regression checkpoint...")
-    TabICLRegressor(device=device, n_estimators=1, batch_size=1).fit(X, y_reg)
+    reg = TabICLRegressor(device=device, n_estimators=1, batch_size=1)
+    reg.fit(X, y_reg)
+    del reg
+    gc.collect()
+
     print("Caching TabICLv2 classification checkpoint...")
-    TabICLClassifier(device=device, n_estimators=1, batch_size=1).fit(X, y_clf)
+    clf = TabICLClassifier(device=device, n_estimators=1, batch_size=1)
+    clf.fit(X, y_clf)
+    del clf
+    gc.collect()
 
 
 def warm_tabfm(device: str) -> None:
-    from tabfm import TabFMClassifier, TabFMRegressor
     from tabfm import tabfm_v1_0_0_pytorch as tabfm_v1_0_0
 
-    rng = np.random.default_rng(42)
-    X = pd.DataFrame(rng.normal(size=(100, 8)).astype(np.float32))
-    y_reg = pd.Series(0.8 * X.iloc[:, 0] - 0.3 * X.iloc[:, 1] + rng.normal(scale=0.1, size=100))
-    y_clf = pd.Series(np.where(X.iloc[:, 0] + X.iloc[:, 1] > 0, "A", "B"))
     dtype = torch.bfloat16 if device == "cuda" and torch.cuda.is_bf16_supported() else None
 
     print("Caching TabFM regression checkpoint...")
     reg_base = tabfm_v1_0_0.load(model_type="regression", device=device, dtype=dtype)
-    TabFMRegressor(model=reg_base).fit(X, y_reg)
+    del reg_base
+    gc.collect()
 
     print("Caching TabFM classification checkpoint...")
     clf_base = tabfm_v1_0_0.load(model_type="classification", device=device, dtype=dtype)
-    TabFMClassifier(model=clf_base).fit(X, y_clf)
+    del clf_base
+    gc.collect()
 
 
 def main() -> None:

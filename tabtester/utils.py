@@ -16,18 +16,82 @@ from sklearn.metrics import (
 )
 
 
-def read_csv(uploaded_file: Any) -> pd.DataFrame:
+def read_csv(uploaded_file: Any, enable_japanese_support: bool = False) -> pd.DataFrame:
     raw = uploaded_file.getvalue()
-    for encoding in ("utf-8-sig", "utf-8", "cp932"):
+    encodings = ["utf-8-sig", "utf-8"]
+    if enable_japanese_support:
+        encodings.append("cp932")
+    for encoding in encodings:
         try:
             return pd.read_csv(io.BytesIO(raw), encoding=encoding)
         except UnicodeDecodeError:
             continue
-    raise ValueError("Could not decode CSV. Tried utf-8-sig, utf-8, and cp932.")
+    tried = ", ".join(encodings)
+    raise ValueError(f"Could not decode CSV. Tried {tried}.")
+
+
+
+def complete_target_columns(df: pd.DataFrame) -> list[str]:
+    """Return columns with no missing values, preserving source order."""
+    missing = df.isna().any(axis=0)
+    return [str(column) for column in df.columns if not bool(missing[column])]
+
+
+def missing_column_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Summarize columns excluded from target selection due to missing values."""
+    counts = df.isna().sum(axis=0)
+    rows = []
+    for column in df.columns:
+        count = int(counts[column])
+        if count == 0:
+            continue
+        rows.append(
+            {
+                "Column": str(column),
+                "Missing values": count,
+                "Missing %": 100.0 * count / max(len(df), 1),
+            }
+        )
+    return pd.DataFrame(rows, columns=["Column", "Missing values", "Missing %"])
 
 
 def csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8-sig")
+
+
+def impute_with_backup(
+    df: pd.DataFrame,
+    target: str,
+    missing_mask: pd.Series,
+    predictions: Any,
+) -> tuple[pd.DataFrame, str]:
+    """Fill missing target values in place and preserve the original column."""
+    if target not in df.columns:
+        raise ValueError(f"Target column not found: {target}")
+    if len(missing_mask) != len(df):
+        raise ValueError("Missing-value mask length does not match the dataset.")
+
+    mask = pd.Series(missing_mask, index=df.index, dtype=bool)
+    values = np.asarray(predictions)
+    if values.ndim == 2 and values.shape[1] == 1:
+        values = values[:, 0]
+    if values.ndim != 1:
+        raise ValueError("Imputation predictions must be one-dimensional.")
+    if len(values) != int(mask.sum()):
+        raise ValueError("Prediction count does not match the number of missing rows.")
+
+    base_name = f"{target}__original"
+    backup_column = base_name
+    suffix = 2
+    while backup_column in df.columns:
+        backup_column = f"{base_name}_{suffix}"
+        suffix += 1
+
+    output = df.copy()
+    target_position = output.columns.get_loc(target)
+    output.insert(target_position + 1, backup_column, output[target].copy())
+    output.loc[mask, target] = values
+    return output, backup_column
 
 
 def safe_stratify(y: pd.Series, test_size: float) -> pd.Series | None:

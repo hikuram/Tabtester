@@ -17,12 +17,16 @@ from tabtester.backends import (
     available_model_names,
     foundation_model_names,
     make_backend,
+    registered_model_names,
 )
-from tabtester.plotting import plot_classification, plot_regression
+from tabtester.plotting import configure_matplotlib_font, plot_classification, plot_regression
 from tabtester.utils import (
     align_feature_columns,
     classification_metrics,
+    complete_target_columns,
     csv_bytes,
+    impute_with_backup,
+    missing_column_summary,
     read_csv,
     regression_metrics,
     safe_stratify,
@@ -31,6 +35,14 @@ from tabtester.utils import (
 APP_TITLE = "Tabtester"
 DEFAULT_TEST_SIZE = 0.2
 DEFAULT_RANDOM_STATE = 42
+ENABLE_JAPANESE_SUPPORT = os.getenv("ENABLE_JAPANESE_SUPPORT", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+MATPLOTLIB_FONT = configure_matplotlib_font(ENABLE_JAPANESE_SUPPORT)
+
 TABFM_LICENSE_NOTICE = (
     "TabFM default pretrained weights are licensed separately from the TabFM source code. "
     "They are restricted to non-commercial, non-production use."
@@ -97,6 +109,14 @@ def render_environment_status() -> None:
     st.text(f"TabFM: {package_version('tabfm')}")
     st.text(f"CUDA runtime: {torch.version.cuda or 'None'}")
     st.text(f"CUDA available: {torch.cuda.is_available()}")
+    if ENABLE_JAPANESE_SUPPORT:
+        st.text("Japanese support: enabled")
+        st.text(f"Matplotlib font: {MATPLOTLIB_FONT or 'Japanese-capable font not found'}")
+    offline = os.getenv("HF_HUB_OFFLINE", "0").strip() == "1"
+    st.text(f"Foundation cache: {'offline' if offline else 'network fallback allowed'}")
+    st.text(f"HF_HOME: {os.getenv('HF_HOME', 'default cache')}")
+    prefetched = os.getenv("TABTESTER_PREFETCHED_MODELS", "unknown")
+    st.text(f"Build-time foundation models: {prefetched}")
     if torch.cuda.is_available():
         st.text(f"GPU: {torch.cuda.get_device_name(0)}")
         st.text(f"BF16: {torch.cuda.is_bf16_supported()}")
@@ -157,14 +177,33 @@ def main() -> None:
         st.divider()
         st.subheader("Benchmark settings")
         task = st.radio("Task type", ["Regression", "Classification"], index=0)
-        default_models = [name for name in ["TabICLv2", "XGBoost (Default)"] if name in available_models]
+        all_models = registered_model_names()
+        available_model_set = set(available_models)
+        default_models = [name for name in ["TabICLv2", "XGBoost (Default)"] if name in available_model_set]
         if not default_models and available_models:
             default_models = available_models[:1]
-        selected_models = st.multiselect(
-            "Models to benchmark",
-            available_models,
-            default=default_models,
-        )
+
+        st.markdown("**Models to benchmark**")
+        selected_models = []
+        for model_name in all_models:
+            toggle_key = f"benchmark_model_toggle::{model_name}"
+            is_available = model_name in available_model_set
+            if toggle_key not in st.session_state:
+                st.session_state[toggle_key] = model_name in default_models
+            if not is_available:
+                st.session_state[toggle_key] = False
+            enabled = st.toggle(
+                model_name,
+                key=toggle_key,
+                disabled=not is_available,
+                help=None if is_available else "Required backend is not installed in this environment.",
+            )
+            if enabled and is_available:
+                selected_models.append(model_name)
+
+        unavailable_models = [name for name in all_models if name not in available_model_set]
+        if unavailable_models:
+            st.caption("Unavailable backends are shown disabled: " + ", ".join(unavailable_models))
 
         device_options = ["auto", "cpu"] + (["cuda"] if torch.cuda.is_available() else [])
         device = st.selectbox("Foundation model device", device_options, index=0)
@@ -205,7 +244,7 @@ def main() -> None:
         return
 
     try:
-        df = read_csv(train_file)
+        df = read_csv(train_file, ENABLE_JAPANESE_SUPPORT)
     except Exception as exc:
         st.error(f"Failed to read CSV: {exc}")
         return
@@ -220,15 +259,32 @@ def main() -> None:
     st.subheader("Data preview")
     st.dataframe(df.head(100), use_container_width=True)
 
-    target = st.selectbox("Target column", list(df.columns), index=len(df.columns) - 1)
+    target_candidates = complete_target_columns(df)
+    missing_targets = missing_column_summary(df)
+    if not missing_targets.empty:
+        st.warning(
+            f"{len(missing_targets)} column(s) contain missing values and are excluded from Target column."
+        )
+        st.dataframe(
+            missing_targets.style.format({"Missing %": "{:.1f}%"}),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    if not target_candidates:
+        st.error("No complete data column is available for Target column.")
+        return
+
+    target = st.selectbox(
+        "Target column",
+        target_candidates,
+        index=len(target_candidates) - 1,
+        help="Columns containing one or more missing values are excluded from this selector.",
+    )
     candidate_excluded = [column for column in df.columns if column != target]
     excluded = st.multiselect("Exclude columns", candidate_excluded, default=[])
 
-    df_clean = df.dropna(subset=[target]).copy()
-    dropped_rows = len(df) - len(df_clean)
-    if dropped_rows:
-        st.caption(f"Rows with missing target excluded from training/evaluation: {dropped_rows}")
-
+    df_clean = df.copy()
     X = df_clean.drop(columns=[target] + excluded)
     y = df_clean[target].copy()
     if X.shape[1] == 0:
@@ -267,6 +323,10 @@ def main() -> None:
 
     with tab_eval:
         st.markdown("### Model performance benchmark")
+        st.caption(
+            "Timing includes local model loading/preparation performed inside fit. "
+            "When HF Hub is offline and checkpoints were prefetched into the image, network download time is zero."
+        )
         test_size = st.slider("Test fraction", 0.05, 0.5, DEFAULT_TEST_SIZE, 0.05)
 
         if "TabICLv2" in selected_models and len(X) < 300:
@@ -394,7 +454,7 @@ def main() -> None:
             st.warning(TABFM_LICENSE_NOTICE)
         if new_file is not None:
             try:
-                new_df = read_csv(new_file)
+                new_df = read_csv(new_file, ENABLE_JAPANESE_SUPPORT)
                 new_features = align_feature_columns(new_df, list(X.columns))
                 st.dataframe(new_df.head(100), use_container_width=True)
             except Exception as exc:
@@ -422,14 +482,27 @@ def main() -> None:
 
     with tab_impute:
         st.markdown("### Missing target imputation")
-        st.caption("Train on rows where the selected target is present, then predict only the missing target rows.")
-        missing_mask = df[target].isna()
-        missing_count = int(missing_mask.sum())
-        if missing_count == 0:
-            st.info(f"The selected target column '{target}' has no missing values.")
+        st.caption(
+            "Benchmark targets must be complete. Select a column with missing values here to impute it separately."
+        )
+        impute_target_options = [
+            str(column)
+            for column in df.columns
+            if bool(df[column].isna().any())
+        ]
+        if not impute_target_options:
+            st.info("No column with missing target values is available for imputation.")
         elif not available_foundation_models:
             st.warning("No foundation-model backend is installed for imputation.")
         else:
+            impute_target = st.selectbox(
+                "Imputation target",
+                impute_target_options,
+                format_func=lambda column: f"{column} ({int(df[column].isna().sum())} missing)",
+                key="impute_target",
+            )
+            missing_mask = df[impute_target].isna()
+            missing_count = int(missing_mask.sum())
             st.write(f"Missing target rows: **{missing_count}**")
             impute_model = st.selectbox("Imputation model", available_foundation_models, key="impute_model")
             if impute_model == "TabFM":
@@ -437,25 +510,54 @@ def main() -> None:
             if st.button("Run imputation", type="primary"):
                 if validate_tabfm_use([impute_model], tabfm_ack, tabfm_checkpoint_path):
                     try:
-                        X_missing_raw = df.loc[missing_mask].drop(columns=[target] + excluded)
-                        X_missing = align_feature_columns(X_missing_raw, list(X.columns))
+                        impute_excluded = [column for column in excluded if column != impute_target]
+                        labeled_mask = ~missing_mask
+                        X_impute_raw = df.loc[labeled_mask].drop(
+                            columns=[impute_target] + impute_excluded
+                        )
+                        y_impute = df.loc[labeled_mask, impute_target].copy()
+                        if X_impute_raw.shape[1] == 0:
+                            raise ValueError("No feature columns remain for imputation.")
+
+                        if task == "Regression":
+                            y_impute_numeric = pd.to_numeric(y_impute, errors="coerce")
+                            if y_impute_numeric.isna().any():
+                                raise ValueError("Regression imputation target contains non-numeric values.")
+                            y_impute = y_impute_numeric
+                        elif y_impute.nunique(dropna=False) < 2:
+                            raise ValueError("Classification imputation requires at least two target classes.")
+
+                        X_missing_raw = df.loc[missing_mask].drop(
+                            columns=[impute_target] + impute_excluded
+                        )
+                        X_missing = align_feature_columns(
+                            X_missing_raw,
+                            list(X_impute_raw.columns),
+                        )
                         backend = make_backend(impute_model, config)
                         with st.spinner(f"Imputing with {impute_model}..."):
-                            backend.fit(X, y)
+                            backend.fit(X_impute_raw, y_impute)
                             pred = np.asarray(backend.predict(X_missing))
-                        output = df.copy()
-                        imputed_column = f"{target}_imputed"
-                        output[imputed_column] = output[target]
-                        output.loc[missing_mask, imputed_column] = pred
+                        output, backup_column = impute_with_backup(
+                            df,
+                            impute_target,
+                            missing_mask,
+                            pred,
+                        )
+                        st.success(
+                            f"Filled missing values in '{impute_target}'. "
+                            f"Original values are preserved in '{backup_column}'."
+                        )
                         st.dataframe(output.loc[missing_mask].head(100), use_container_width=True)
                         st.download_button(
                             "Download imputed dataset",
                             data=csv_bytes(output),
-                            file_name=f"tabtester_imputed_{target}.csv",
+                            file_name=f"tabtester_imputed_{impute_target}.csv",
                             mime="text/csv",
                         )
                     except Exception as exc:
                         st.error(f"Imputation failed: {exc}")
+
 
 
 if __name__ == "__main__":

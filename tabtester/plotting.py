@@ -1,8 +1,39 @@
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 import numpy as np
 from sklearn.metrics import accuracy_score, confusion_matrix
+
+
+JAPANESE_FONT_CANDIDATES = (
+    "Noto Sans CJK JP",
+    "Noto Sans JP",
+    "Yu Gothic",
+    "Meiryo",
+    "IPAexGothic",
+    "IPAGothic",
+)
+
+
+def configure_matplotlib_font(enable_japanese_support: bool = False) -> str | None:
+    """Use an installed Japanese-capable font only when explicitly enabled."""
+    if not enable_japanese_support:
+        return None
+    available = {entry.name for entry in font_manager.fontManager.ttflist}
+    for candidate in JAPANESE_FONT_CANDIDATES:
+        if candidate not in available:
+            continue
+        plt.rcParams["font.family"] = "sans-serif"
+        fallback = [
+            name
+            for name in plt.rcParams.get("font.sans-serif", [])
+            if name != candidate
+        ]
+        plt.rcParams["font.sans-serif"] = [candidate, *fallback]
+        plt.rcParams["axes.unicode_minus"] = False
+        return candidate
+    return None
 
 
 def plot_regression(y_true, predictions: dict[str, np.ndarray], target: str):
