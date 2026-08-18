@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import os
 
 import numpy as np
 import pandas as pd
@@ -55,7 +56,11 @@ def warm_tabfm(device: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Pre-download Tabtester foundation-model checkpoints.")
-    parser.add_argument("--model", choices=["tabicl", "tabfm", "all"], default="tabicl")
+    parser.add_argument(
+        "--model",
+        choices=["none", "tabicl", "tabfm", "all"],
+        default=os.getenv("PREFETCH_FOUNDATION_MODELS", "tabicl"),
+    )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument(
         "--accept-tabfm-license",
@@ -67,17 +72,25 @@ def main() -> None:
     device = resolve_device(args.device)
     print(f"device={device}")
 
-    if args.model in ("tabfm", "all") and not args.accept_tabfm_license:
+    accepted_tabfm_license = args.accept_tabfm_license or os.getenv(
+        "ACCEPT_TABFM_LICENSE", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+    if args.model in ("tabfm", "all") and not accepted_tabfm_license:
         raise SystemExit(
             "TabFM default pretrained weights are non-commercial/non-production. "
-            "Re-run with --accept-tabfm-license after reviewing the upstream weight license."
+            "Set ACCEPT_TABFM_LICENSE=1 or use --accept-tabfm-license after reviewing "
+            "the upstream weight license."
         )
 
+    if args.model == "none":
+        print("No foundation models requested.")
+        return
     if args.model in ("tabicl", "all"):
         warm_tabicl(device)
     if args.model in ("tabfm", "all"):
         warm_tabfm(device)
-    print("Checkpoint warmup complete.")
+    print("Model prefetch complete.")
 
 
 if __name__ == "__main__":

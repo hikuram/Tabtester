@@ -30,7 +30,7 @@ from tabtester.utils import (
     impute_with_backup,
     missing_column_summary,
     prepare_benchmark_target,
-    read_csv,
+    read_csv_with_info,
     regression_metrics,
     safe_stratify,
 )
@@ -50,6 +50,43 @@ TABFM_LICENSE_NOTICE = (
     "TabFM default pretrained weights are licensed separately from the TabFM source code. "
     "They are restricted to non-commercial, non-production use."
 )
+
+CSV_ENCODING_LABELS = {
+    "Auto": "auto",
+    "UTF-8": "utf-8",
+    "UTF-8 BOM": "utf-8-sig",
+    "UTF-16": "utf-16",
+}
+CSV_DELIMITER_LABELS = {
+    "Auto": "auto",
+    "Comma": "comma",
+    "Tab": "tab",
+    "Semicolon": "semicolon",
+}
+
+
+def render_csv_input_options(prefix: str) -> tuple[str, str]:
+    encodings = dict(CSV_ENCODING_LABELS)
+    if ENABLE_JAPANESE_SUPPORT:
+        encodings["CP932"] = "cp932"
+
+    with st.expander("CSV input options", expanded=False):
+        col_encoding, col_delimiter = st.columns(2)
+        with col_encoding:
+            encoding_label = st.selectbox(
+                "Encoding",
+                options=list(encodings),
+                index=0,
+                key=f"{prefix}_csv_encoding",
+            )
+        with col_delimiter:
+            delimiter_label = st.selectbox(
+                "Delimiter",
+                options=list(CSV_DELIMITER_LABELS),
+                index=0,
+                key=f"{prefix}_csv_delimiter",
+            )
+    return encodings[encoding_label], CSV_DELIMITER_LABELS[delimiter_label]
 
 
 def package_version(name: str) -> str:
@@ -118,8 +155,7 @@ def render_environment_status() -> None:
     offline = os.getenv("HF_HUB_OFFLINE", "0").strip() == "1"
     st.text(f"Foundation cache: {'offline' if offline else 'network fallback allowed'}")
     st.text(f"HF_HOME: {os.getenv('HF_HOME', 'default cache')}")
-    prefetched = os.getenv("TABTESTER_PREFETCHED_MODELS", "unknown")
-    st.text(f"Build-time foundation models: {prefetched}")
+    st.text(f"Model cache root: {os.getenv('TABTESTER_MODEL_CACHE', '/models')}")
     if torch.cuda.is_available():
         st.text(f"GPU: {torch.cuda.get_device_name(0)}")
         st.text(f"BF16: {torch.cuda.is_bf16_supported()}")
@@ -398,14 +434,25 @@ def main() -> None:
         st.error("No model backend is available. Install at least one supported backend.")
         return
 
+    train_encoding, train_delimiter = render_csv_input_options("train")
     train_file = st.file_uploader("Upload dataset (CSV)", type=["csv"])
     if train_file is None:
         st.info("Upload a CSV dataset to begin.")
         return
 
-    dataset_signature = hashlib.sha256(train_file.getvalue()).hexdigest()
+    raw_train = train_file.getvalue()
+    signature_payload = raw_train + f"\0{train_encoding}\0{train_delimiter}".encode("utf-8")
+    dataset_signature = hashlib.sha256(signature_payload).hexdigest()
     try:
-        df = read_csv(train_file, ENABLE_JAPANESE_SUPPORT)
+        df, used_encoding = read_csv_with_info(
+            train_file,
+            enable_japanese_support=ENABLE_JAPANESE_SUPPORT,
+            encoding_mode=train_encoding,
+            delimiter_mode=train_delimiter,
+        )
+        st.caption(
+            f"CSV parser: encoding={used_encoding}, delimiter={train_delimiter}"
+        )
     except Exception as exc:
         st.error(f"Failed to read CSV: {exc}")
         return
@@ -482,7 +529,7 @@ def main() -> None:
         )
         st.caption(
             "Timing includes local model loading/preparation performed inside fit. "
-            "When HF Hub is offline and checkpoints were prefetched into the image, network download time is zero."
+            "When HF Hub is offline and checkpoints were prefetched into the persistent model cache, network download time is zero."
         )
         test_size = st.slider("Test fraction", 0.05, 0.5, DEFAULT_TEST_SIZE, 0.05)
 
@@ -708,11 +755,21 @@ def main() -> None:
             prediction_setup_error = str(exc)
             st.error(f"Prediction target setup failed: {prediction_setup_error}")
 
+        predict_encoding, predict_delimiter = render_csv_input_options("predict")
         new_file = st.file_uploader("Upload rows to predict (CSV)", type=["csv"], key="predict_file")
         if new_file is not None and X_predict is not None:
             try:
-                new_df = read_csv(new_file, ENABLE_JAPANESE_SUPPORT)
+                new_df, used_prediction_encoding = read_csv_with_info(
+                    new_file,
+                    enable_japanese_support=ENABLE_JAPANESE_SUPPORT,
+                    encoding_mode=predict_encoding,
+                    delimiter_mode=predict_delimiter,
+                )
                 new_features = align_feature_columns(new_df, list(X_predict.columns))
+                st.caption(
+                    f"Prediction CSV parser: encoding={used_prediction_encoding}, "
+                    f"delimiter={predict_delimiter}"
+                )
                 st.dataframe(new_df.head(100), use_container_width=True)
             except Exception as exc:
                 st.error(f"Prediction CSV error: {exc}")

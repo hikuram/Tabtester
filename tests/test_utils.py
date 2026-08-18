@@ -12,6 +12,7 @@ from tabtester.utils import (
     missing_column_summary,
     prepare_benchmark_target,
     read_csv,
+    read_csv_with_info,
     regression_metrics,
     safe_stratify,
 )
@@ -114,6 +115,37 @@ class UtilsTest(unittest.TestCase):
 
         self.assertEqual(frame.columns.tolist(), ["\u540d\u524d", "\u5024"])
         self.assertEqual(frame.iloc[0].tolist(), ["\u30c6\u30b9\u30c8", 1])
+
+    def test_read_csv_auto_accepts_excel_style_utf16_tab_file(self):
+        text = "name\tvalue\r\nalpha\t1\r\nbeta\t2\r\n"
+        uploaded = io.BytesIO(text.encode("utf-16"))
+
+        frame, encoding = read_csv_with_info(uploaded)
+
+        self.assertEqual(encoding, "utf-16")
+        self.assertEqual(frame.columns.tolist(), ["name", "value"])
+        self.assertEqual(frame["value"].tolist(), [1, 2])
+
+    def test_read_csv_manual_semicolon_delimiter(self):
+        text = "name;value\nalpha;1\n"
+        uploaded = io.BytesIO(text.encode("utf-8"))
+
+        frame, encoding = read_csv_with_info(
+            uploaded,
+            encoding_mode="utf-8",
+            delimiter_mode="semicolon",
+        )
+
+        self.assertEqual(encoding, "utf-8")
+        self.assertEqual(frame.columns.tolist(), ["name", "value"])
+        self.assertEqual(frame.iloc[0].tolist(), ["alpha", 1])
+
+    def test_read_csv_manual_cp932_requires_japanese_support(self):
+        text = "\u540d\u524d,\u5024\n\u30c6\u30b9\u30c8,1\n"
+        uploaded = io.BytesIO(text.encode("cp932"))
+
+        with self.assertRaisesRegex(ValueError, "ENABLE_JAPANESE_SUPPORT"):
+            read_csv_with_info(uploaded, encoding_mode="cp932")
 
     def test_impute_with_backup_fills_target_and_preserves_original(self):
         frame = pd.DataFrame({"id": [1, 2, 3], "target": [10.0, None, 30.0], "x": [4, 5, 6]})

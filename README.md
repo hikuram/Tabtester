@@ -38,7 +38,7 @@ nvcr.io/nvidia/pytorch:26.05-py3
 
 This image provides the PyTorch/CUDA stack. Tabtester does not reinstall PyTorch in the NGC image.
 
-Japanese-specific compatibility is disabled by default. The default container does not install Noto CJK fonts and CSV input is limited to UTF-8/UTF-8 BOM.
+Japanese-specific compatibility is disabled by default. CSV input supports UTF-8, UTF-8 BOM, and BOM-marked UTF-16 without extra dependencies. The CSV parser also exposes compact Encoding and Delimiter selectors, both defaulting to Auto.
 
 To enable Japanese support, set this in `.env` before building the image:
 
@@ -46,7 +46,7 @@ To enable Japanese support, set this in `.env` before building the image:
 ENABLE_JAPANESE_SUPPORT=1
 ```
 
-When enabled, the Docker build installs Noto CJK fonts, Matplotlib prefers a Japanese-capable font, and CSV input also accepts CP932. Rebuild the image after changing this option because the font package is selected at build time.
+When enabled, the Docker build installs Noto CJK fonts, Matplotlib prefers a Japanese-capable font, and CP932 becomes available for CSV input. Auto encoding detection tries CP932 only in this mode. Tabtester uses a dedicated Matplotlib cache and directly registers installed Japanese font files if the cached font list does not contain them. Rebuild the image after changing this option because the font package is selected at build time. The Environment panel should report `Matplotlib font: Noto Sans CJK JP` (or another detected Japanese-capable font).
 
 Requirements on the host:
 
@@ -55,13 +55,16 @@ Requirements on the host:
 - NVIDIA Container Toolkit
 - NGC access for pulling `nvcr.io/nvidia/pytorch`
 
-Create the local environment file and start the app:
+Create the local environment file, build the app image, prefetch the default foundation-model checkpoints once, and start the app:
 
 ```bash
 cp .env.example .env
 docker compose build
+docker compose run --rm model-prefetch
 docker compose up -d
 ```
+
+The prefetch step writes model files into the persistent `model-cache` named volume. Rebuilding the image does not delete this volume.
 
 Open:
 
@@ -89,43 +92,60 @@ docker compose exec tabtester python scripts/check_gpu.py
 
 ## Foundation-model checkpoints and offline runtime
 
-The benchmark timer starts immediately before `backend.fit(...)`. For the foundation-model backends, checkpoint acquisition or loading can happen inside `fit`, so an uncached first run can include network download time in `Fit Time (s)`. The recommended Docker workflow avoids that network component by downloading the requested checkpoints during image build and running the container with Hugging Face Hub offline mode enabled.
-
-The image stores its Hugging Face cache at:
+Foundation-model downloads are intentionally separated from the Docker image build. The image contains the application and Python dependencies, while model files live in the Compose named volume `model-cache`, mounted at:
 
 ```text
-/opt/tabtester/huggingface
+/models
 ```
 
-This cache is part of the image rather than a host-mounted volume, so moving the built image to another compatible Docker host keeps the checkpoint files with it.
+The container uses these cache locations:
 
-By default the build prefetches TabICLv2 only, keeps Japanese-specific compatibility disabled, and runs offline:
+```text
+HF_HOME=/models/huggingface
+TORCH_HOME=/models/torch
+XDG_CACHE_HOME=/models/xdg
+```
+
+By default `model-prefetch` downloads TabICLv2 into that volume:
 
 ```text
 PREFETCH_FOUNDATION_MODELS=tabicl
 ACCEPT_TABFM_LICENSE=0
-ENABLE_JAPANESE_SUPPORT=0
 HF_HUB_OFFLINE=1
 ```
 
-To bake both TabICLv2 and the default TabFM regression/classification weights into the image, first review and accept the TabFM pretrained-weight license, then set:
+Run prefetch explicitly whenever a new cache is needed or the requested model set changes:
+
+```bash
+docker compose run --rm model-prefetch
+```
+
+The prefetch service uses the same `tabtester:local` image as the app, enables Hugging Face network access only for that run, and exits when checkpoint preparation is complete. Repeated image builds reuse the existing named volume and therefore do not bake the large model files into each image.
+
+To prefetch TabICLv2 plus the default TabFM regression/classification weights, first review and accept the TabFM pretrained-weight license, then set:
 
 ```text
 PREFETCH_FOUNDATION_MODELS=all
 ACCEPT_TABFM_LICENSE=1
-HF_HUB_OFFLINE=1
 ```
 
-and build normally:
+and run:
 
 ```bash
-docker compose build
+docker compose run --rm model-prefetch
+```
+
+Runtime remains offline by default. With the requested checkpoints already present in `model-cache`, start the application normally:
+
+```bash
 docker compose up -d
 ```
 
-The build machine needs network access to the model sources. The running container does not: `HF_HUB_OFFLINE=1` is the default runtime setting. Classical backends such as XGBoost, LightGBM, CatBoost, FLAML, and tuned XGBoost do not use pretrained foundation-model checkpoints.
+If a required checkpoint is missing while `HF_HUB_OFFLINE=1`, the corresponding foundation backend will fail rather than silently downloading during a benchmark. Set `HF_HUB_OFFLINE=0` only when network fallback is intentionally desired.
 
-`Fit Time (s)` still includes local checkpoint deserialization and model preparation performed by the backend. It excludes network transfer only when the required weights were prefetched successfully and runtime offline mode is enabled.
+`docker compose down` keeps the named model cache. `docker compose down -v` removes it and should only be used when the cached model files are intentionally being discarded.
+
+The benchmark timer starts immediately before `backend.fit(...)`. `Fit Time (s)` therefore still includes local checkpoint deserialization and model preparation, but not network transfer when the persistent cache is populated and runtime offline mode is enabled.
 
 ## Local Python installation
 
@@ -142,7 +162,7 @@ GPU-enabled local PyTorch installation may require a platform-specific PyTorch p
 
 ## Using the app
 
-1. Upload a CSV file.
+1. Upload a CSV file. Encoding and delimiter default to Auto; open `CSV input options` only when manual selection is needed. Auto handles UTF-8, UTF-8 BOM, BOM-marked UTF-16, and common comma/tab/semicolon separators. CP932 is included when Japanese support is enabled.
 2. Review columns excluded from target selection because they contain missing values, then choose one or more complete target columns and optional excluded columns such as IDs. All selected target columns are removed from the feature set for every benchmark target to reduce target leakage.
 3. Select regression or classification.
 4. Select models with the individual sidebar toggles; unavailable backends remain visible but disabled.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import io
 import math
 from typing import Any
@@ -16,18 +17,90 @@ from sklearn.metrics import (
 )
 
 
-def read_csv(uploaded_file: Any, enable_japanese_support: bool = False) -> pd.DataFrame:
-    raw = uploaded_file.getvalue()
-    encodings = ["utf-8-sig", "utf-8"]
+CSV_DELIMITERS: dict[str, str | None] = {
+    "auto": None,
+    "comma": ",",
+    "tab": "\t",
+    "semicolon": ";",
+}
+
+CSV_ENCODINGS = {
+    "auto": None,
+    "utf-8": "utf-8",
+    "utf-8-sig": "utf-8-sig",
+    "utf-16": "utf-16",
+    "cp932": "cp932",
+}
+
+
+def _auto_csv_encodings(raw: bytes, enable_japanese_support: bool) -> list[str]:
+    if raw.startswith(codecs.BOM_UTF8):
+        return ["utf-8-sig"]
+    if raw.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        return ["utf-32"]
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return ["utf-16"]
+
+    encodings = ["utf-8"]
     if enable_japanese_support:
         encodings.append("cp932")
+    return encodings
+
+
+def read_csv_with_info(
+    uploaded_file: Any,
+    enable_japanese_support: bool = False,
+    encoding_mode: str = "auto",
+    delimiter_mode: str = "auto",
+) -> tuple[pd.DataFrame, str]:
+    raw = uploaded_file.getvalue()
+    if encoding_mode not in CSV_ENCODINGS:
+        raise ValueError(f"Unsupported CSV encoding mode: {encoding_mode}")
+    if delimiter_mode not in CSV_DELIMITERS:
+        raise ValueError(f"Unsupported CSV delimiter mode: {delimiter_mode}")
+    if encoding_mode == "cp932" and not enable_japanese_support:
+        raise ValueError("CP932 input requires ENABLE_JAPANESE_SUPPORT=1.")
+
+    encodings = (
+        _auto_csv_encodings(raw, enable_japanese_support)
+        if encoding_mode == "auto"
+        else [CSV_ENCODINGS[encoding_mode]]
+    )
+    delimiter = CSV_DELIMITERS[delimiter_mode]
+    errors: list[str] = []
+
     for encoding in encodings:
-        try:
-            return pd.read_csv(io.BytesIO(raw), encoding=encoding)
-        except UnicodeDecodeError:
+        if encoding is None:
             continue
+        kwargs: dict[str, Any] = {"encoding": encoding}
+        if delimiter is None:
+            kwargs["sep"] = None
+            kwargs["engine"] = "python"
+        else:
+            kwargs["sep"] = delimiter
+        try:
+            return pd.read_csv(io.BytesIO(raw), **kwargs), encoding
+        except (UnicodeDecodeError, UnicodeError, pd.errors.ParserError) as exc:
+            errors.append(f"{encoding}: {exc}")
+
     tried = ", ".join(encodings)
-    raise ValueError(f"Could not decode CSV. Tried {tried}.")
+    detail = " | ".join(errors) if errors else "No encoding succeeded."
+    raise ValueError(f"Could not read CSV. Tried {tried}. {detail}")
+
+
+def read_csv(
+    uploaded_file: Any,
+    enable_japanese_support: bool = False,
+    encoding_mode: str = "auto",
+    delimiter_mode: str = "auto",
+) -> pd.DataFrame:
+    frame, _ = read_csv_with_info(
+        uploaded_file,
+        enable_japanese_support=enable_japanese_support,
+        encoding_mode=encoding_mode,
+        delimiter_mode=delimiter_mode,
+    )
+    return frame
 
 
 
