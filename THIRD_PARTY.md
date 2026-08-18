@@ -10,13 +10,13 @@ Upstream repository: https://github.com/soda-inria/tabicl
 
 ## TabFM
 
-The source repository does not ship TabFM pretrained weights. If `PREFETCH_FOUNDATION_MODELS` is set to `tabfm` or `all` and `ACCEPT_TABFM_LICENSE=1` during a Docker build, the resulting local image will contain cached TabFM weights. Redistribution or production use of such an image must comply with the separate TabFM pretrained-weight license.
+The source repository and Docker image do not ship TabFM pretrained weights. If `PREFETCH_FOUNDATION_MODELS` is set to `tabfm` or `all` and `ACCEPT_TABFM_LICENSE=1`, the `model-prefetch` Compose service downloads the requested weights into the local persistent `model-cache` volume. Any copying, redistribution, or production use of those cached weights must comply with the separate TabFM pretrained-weight license.
 
 The TabFM source repository uses Apache-2.0. The default pretrained weights are distributed under a separate `tabfm-non-commercial-v1.0` license and are restricted to non-commercial, non-production use.
 
 Upstream repository: https://github.com/google-research/tabfm
 
-The Tabtester source archive does not redistribute TabFM pretrained weights. An opt-in locally built image may contain cached weights as described above.
+The Tabtester source archive and application image do not redistribute TabFM pretrained weights. The optional local model cache may contain weights downloaded by the user as described above.
 
 ## NVIDIA NGC PyTorch image
 

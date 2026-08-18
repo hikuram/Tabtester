@@ -1,26 +1,34 @@
+x-tabtester-build: &tabtester-build
+  context: .
+  args:
+    BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.05-py3}
+    ENABLE_JAPANESE_SUPPORT: ${ENABLE_JAPANESE_SUPPORT:-0}
+
+x-model-cache-environment: &model-cache-environment
+  HF_HOME: /models/huggingface
+  TORCH_HOME: /models/torch
+  XDG_CACHE_HOME: /models/xdg
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  TABTESTER_MODEL_CACHE: /models
+
 services:
   tabtester:
-    build:
-      context: .
-      args:
-        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.05-py3}
-        PREFETCH_FOUNDATION_MODELS: ${PREFETCH_FOUNDATION_MODELS:-tabicl}
-        ACCEPT_TABFM_LICENSE: ${ACCEPT_TABFM_LICENSE:-0}
-        ENABLE_JAPANESE_SUPPORT: ${ENABLE_JAPANESE_SUPPORT:-0}
+    build: *tabtester-build
     image: tabtester:local
     init: true
     ports:
       - "${TABTESTER_PORT:-8501}:8501"
     shm_size: "2gb"
     environment:
-      HF_HOME: /opt/tabtester/huggingface
+      <<: *model-cache-environment
       HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"
-      HF_HUB_DISABLE_TELEMETRY: "1"
       TABFM_CHECKPOINT_PATH: "${TABFM_CHECKPOINT_PATH:-}"
       ENABLE_JAPANESE_SUPPORT: "${ENABLE_JAPANESE_SUPPORT:-0}"
       STREAMLIT_SERVER_ADDRESS: 0.0.0.0
       STREAMLIT_SERVER_PORT: "8501"
       STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    volumes:
+      - model-cache:/models
     deploy:
       resources:
         reservations:
@@ -29,3 +37,22 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
+
+  model-prefetch:
+    profiles: ["tools"]
+    build: *tabtester-build
+    image: tabtester:local
+    init: true
+    environment:
+      <<: *model-cache-environment
+      HF_HUB_OFFLINE: "0"
+      PREFETCH_FOUNDATION_MODELS: "${PREFETCH_FOUNDATION_MODELS:-tabicl}"
+      ACCEPT_TABFM_LICENSE: "${ACCEPT_TABFM_LICENSE:-0}"
+      TABFM_CHECKPOINT_PATH: "${TABFM_CHECKPOINT_PATH:-}"
+      ENABLE_JAPANESE_SUPPORT: "${ENABLE_JAPANESE_SUPPORT:-0}"
+    volumes:
+      - model-cache:/models
+    command: ["python", "scripts/warmup_models.py", "--device", "cpu"]
+
+volumes:
+  model-cache:
