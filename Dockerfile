@@ -1,5 +1,5 @@
-ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:26.05-py3
-FROM ${BASE_IMAGE}
+FROM nvcr.io/nvidia/pytorch:26.05-py3
+
 
 ARG ENABLE_JAPANESE_SUPPORT=0
 
@@ -24,17 +24,21 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /workspace/app
 
-# Use an image-local Matplotlib cache so a cache inherited from the NGC base image
-# cannot hide fonts installed later in this Dockerfile.
-RUN mkdir -p "${MPLCONFIGDIR}" && rm -rf "${MPLCONFIGDIR}"/*
-
-# Japanese-capable fonts are optional to avoid region-specific image bloat by default.
-RUN if [ "${ENABLE_JAPANESE_SUPPORT}" = "1" ]; then \
-        apt-get update \
-        && apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk \
-        && rm -rf /var/lib/apt/lists/* \
-        && fc-cache -f \
-        && rm -rf "${MPLCONFIGDIR}"/*; \
+# Japanese support is a build-only image choice. Edit the default above to 1
+# when building the Japanese-capable image. No runtime setting is used.
+RUN set -eu; \
+    case "${ENABLE_JAPANESE_SUPPORT}" in \
+        0|1) ;; \
+        *) echo "ENABLE_JAPANESE_SUPPORT must be 0 or 1." >&2; exit 2 ;; \
+    esac; \
+    rm -rf "${MPLCONFIGDIR}"; \
+    mkdir -p "${MPLCONFIGDIR}"; \
+    if [ "${ENABLE_JAPANESE_SUPPORT}" = "1" ]; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk; \
+        rm -rf /var/lib/apt/lists/*; \
+        fc-cache -f; \
+        printf 'font.family: sans-serif\nfont.sans-serif: Noto Sans CJK JP, DejaVu Sans\naxes.unicode_minus: False\n' > "${MPLCONFIGDIR}/matplotlibrc"; \
     else \
         echo "Skipping Japanese font installation."; \
     fi

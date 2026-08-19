@@ -21,7 +21,7 @@ from tabtester.backends import (
     make_backend,
     registered_model_names,
 )
-from tabtester.plotting import configure_matplotlib_font, plot_classification, plot_regression
+from tabtester.plotting import plot_classification, plot_regression
 from tabtester.utils import (
     align_feature_columns,
     classification_metrics,
@@ -38,14 +38,6 @@ from tabtester.utils import (
 APP_TITLE = "Tabtester"
 DEFAULT_TEST_SIZE = 0.2
 DEFAULT_RANDOM_STATE = 42
-ENABLE_JAPANESE_SUPPORT = os.getenv("ENABLE_JAPANESE_SUPPORT", "0").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-MATPLOTLIB_FONT = configure_matplotlib_font(ENABLE_JAPANESE_SUPPORT)
-
 TABFM_LICENSE_NOTICE = (
     "TabFM default pretrained weights are licensed separately from the TabFM source code. "
     "They are restricted to non-commercial, non-production use."
@@ -56,6 +48,7 @@ CSV_ENCODING_LABELS = {
     "UTF-8": "utf-8",
     "UTF-8 BOM": "utf-8-sig",
     "UTF-16": "utf-16",
+    "CP932": "cp932",
 }
 CSV_DELIMITER_LABELS = {
     "Auto": "auto",
@@ -66,9 +59,7 @@ CSV_DELIMITER_LABELS = {
 
 
 def render_csv_input_options(prefix: str) -> tuple[str, str]:
-    encodings = dict(CSV_ENCODING_LABELS)
-    if ENABLE_JAPANESE_SUPPORT:
-        encodings["CP932"] = "cp932"
+    encodings = CSV_ENCODING_LABELS
 
     with st.expander("CSV input options", expanded=False):
         col_encoding, col_delimiter = st.columns(2)
@@ -149,9 +140,6 @@ def render_environment_status() -> None:
     st.text(f"TabFM: {package_version('tabfm')}")
     st.text(f"CUDA runtime: {torch.version.cuda or 'None'}")
     st.text(f"CUDA available: {torch.cuda.is_available()}")
-    if ENABLE_JAPANESE_SUPPORT:
-        st.text("Japanese support: enabled")
-        st.text(f"Matplotlib font: {MATPLOTLIB_FONT or 'Japanese-capable font not found'}")
     offline = os.getenv("HF_HUB_OFFLINE", "0").strip() == "1"
     st.text(f"Foundation cache: {'offline' if offline else 'network fallback allowed'}")
     st.text(f"HF_HOME: {os.getenv('HF_HOME', 'default cache')}")
@@ -422,7 +410,7 @@ def main() -> None:
             tabicl_offload_mode = st.selectbox("TabICLv2 offload", ["auto", True, False], index=0)
             tabfm_checkpoint_path = st.text_input(
                 "TabFM local checkpoint path",
-                value=os.getenv("TABFM_CHECKPOINT_PATH", ""),
+                value="",
                 help="Leave empty to use the default Hugging Face checkpoint.",
             ).strip()
 
@@ -446,7 +434,6 @@ def main() -> None:
     try:
         df, used_encoding = read_csv_with_info(
             train_file,
-            enable_japanese_support=ENABLE_JAPANESE_SUPPORT,
             encoding_mode=train_encoding,
             delimiter_mode=train_delimiter,
         )
@@ -761,8 +748,7 @@ def main() -> None:
             try:
                 new_df, used_prediction_encoding = read_csv_with_info(
                     new_file,
-                    enable_japanese_support=ENABLE_JAPANESE_SUPPORT,
-                    encoding_mode=predict_encoding,
+                            encoding_mode=predict_encoding,
                     delimiter_mode=predict_delimiter,
                 )
                 new_features = align_feature_columns(new_df, list(X_predict.columns))

@@ -1,75 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import matplotlib.pyplot as plt
-from matplotlib import font_manager
 import numpy as np
 from sklearn.metrics import accuracy_score, confusion_matrix
-
-
-JAPANESE_FONT_CANDIDATES = (
-    "Noto Sans CJK JP",
-    "Noto Sans JP",
-    "Yu Gothic",
-    "Meiryo",
-    "IPAexGothic",
-    "IPAGothic",
-)
-
-JAPANESE_FONT_FILE_HINTS = (
-    "notosanscjk",
-    "notosansjp",
-    "ipaexg",
-    "ipag",
-    "yugoth",
-    "meiryo",
-)
-
-
-def _looks_like_japanese_font(path: str) -> bool:
-    normalized = str(Path(path)).lower().replace("-", "").replace("_", "")
-    return any(hint in normalized for hint in JAPANESE_FONT_FILE_HINTS)
-
-
-def _register_system_japanese_fonts() -> set[str]:
-    """Register Japanese fonts directly from system files, bypassing stale MPL caches."""
-    registered: set[str] = set()
-    for path in font_manager.findSystemFonts():
-        if not _looks_like_japanese_font(path):
-            continue
-        try:
-            font_manager.fontManager.addfont(path)
-            family = font_manager.FontProperties(fname=path).get_name()
-        except (OSError, RuntimeError, ValueError):
-            continue
-        if family:
-            registered.add(family)
-    return registered
-
-
-def configure_matplotlib_font(enable_japanese_support: bool = False) -> str | None:
-    """Use an installed Japanese-capable font only when explicitly enabled."""
-    if not enable_japanese_support:
-        return None
-
-    available = {entry.name for entry in font_manager.fontManager.ttflist}
-    if not any(candidate in available for candidate in JAPANESE_FONT_CANDIDATES):
-        available.update(_register_system_japanese_fonts())
-
-    for candidate in JAPANESE_FONT_CANDIDATES:
-        if candidate not in available:
-            continue
-        plt.rcParams["font.family"] = "sans-serif"
-        fallback = [
-            name
-            for name in plt.rcParams.get("font.sans-serif", [])
-            if name != candidate
-        ]
-        plt.rcParams["font.sans-serif"] = [candidate, *fallback]
-        plt.rcParams["axes.unicode_minus"] = False
-        return candidate
-    return None
 
 
 def plot_regression(y_true, predictions: dict[str, np.ndarray], target: str):

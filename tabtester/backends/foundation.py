@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 
 import numpy as np
@@ -49,7 +48,7 @@ class TabFMBackend(ModelBackend):
         if self.config.task == "Classification" and y.nunique(dropna=False) > 10:
             raise ValueError("TabFM v1.0.0 supports at most 10 classes.")
         device = resolve_device(self.config.device)
-        checkpoint_path = self.config.tabfm_checkpoint_path or os.getenv("TABFM_CHECKPOINT_PATH") or None
+        checkpoint_path = self.config.tabfm_checkpoint_path or None
         base_model = _load_tabfm_base(self.config.task, device, checkpoint_path)
         if self.config.task == "Regression":
             self.model = TabFMRegressor(model=base_model)

@@ -33,7 +33,7 @@ CSV_ENCODINGS = {
 }
 
 
-def _auto_csv_encodings(raw: bytes, enable_japanese_support: bool) -> list[str]:
+def _auto_csv_encodings(raw: bytes) -> list[str]:
     if raw.startswith(codecs.BOM_UTF8):
         return ["utf-8-sig"]
     if raw.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
@@ -41,15 +41,11 @@ def _auto_csv_encodings(raw: bytes, enable_japanese_support: bool) -> list[str]:
     if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         return ["utf-16"]
 
-    encodings = ["utf-8"]
-    if enable_japanese_support:
-        encodings.append("cp932")
-    return encodings
+    return ["utf-8", "cp932"]
 
 
 def read_csv_with_info(
     uploaded_file: Any,
-    enable_japanese_support: bool = False,
     encoding_mode: str = "auto",
     delimiter_mode: str = "auto",
 ) -> tuple[pd.DataFrame, str]:
@@ -58,11 +54,8 @@ def read_csv_with_info(
         raise ValueError(f"Unsupported CSV encoding mode: {encoding_mode}")
     if delimiter_mode not in CSV_DELIMITERS:
         raise ValueError(f"Unsupported CSV delimiter mode: {delimiter_mode}")
-    if encoding_mode == "cp932" and not enable_japanese_support:
-        raise ValueError("CP932 input requires ENABLE_JAPANESE_SUPPORT=1.")
-
     encodings = (
-        _auto_csv_encodings(raw, enable_japanese_support)
+        _auto_csv_encodings(raw)
         if encoding_mode == "auto"
         else [CSV_ENCODINGS[encoding_mode]]
     )
@@ -90,13 +83,11 @@ def read_csv_with_info(
 
 def read_csv(
     uploaded_file: Any,
-    enable_japanese_support: bool = False,
     encoding_mode: str = "auto",
     delimiter_mode: str = "auto",
 ) -> pd.DataFrame:
     frame, _ = read_csv_with_info(
         uploaded_file,
-        enable_japanese_support=enable_japanese_support,
         encoding_mode=encoding_mode,
         delimiter_mode=delimiter_mode,
     )
