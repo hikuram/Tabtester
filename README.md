@@ -2,7 +2,7 @@
 
 Tabtester is a Streamlit workbench for comparing tabular foundation models with classical machine-learning baselines on the same CSV dataset.
 
-The project supports regression and classification, holdout benchmarking, prediction of new rows, missing-target imputation, and sequential benchmarking of multiple target columns. The backend interface is intentionally small so additional tabular models can be added without expanding the Streamlit app into model-specific branches.
+The project supports regression and classification, holdout benchmarking, prediction of new rows, missing-target imputation, sequential benchmarking of multiple target columns, and data-grounded candidate recommendation for numeric target properties. The backend interface is intentionally small so additional tabular models can be added without expanding the Streamlit app into model-specific branches.
 
 ## Current backends
 
@@ -149,8 +149,30 @@ CSV input uses compact Encoding and Delimiter selectors. Auto mode handles UTF-8
 6. Review the benchmark overview, then open target results in completion-order pages.
 7. Use `Predict New Rows` to train one backend on all labeled rows and predict another CSV with the same leakage-safe feature set.
 8. Use `Impute Missing Target` to fill missing target values in place. The pre-imputation target is preserved in an adjacent `<target>__original` backup column, with a numbered suffix if required.
+9. Use `Recommend Candidates` for numeric-property inverse design. Define target goals, editable search ranges, optional discrete steps, and an optional fixed-sum mixture constraint. Tabtester screens candidate conditions with multiple regression backends, reports consensus and model disagreement, and returns a Pareto table plus a diverse shortlist. Recommendation also records total execution time, phase-level timing, and per-model/per-property fit and prediction time so expensive searches can be diagnosed.
 
 For regression the report includes R2, RMSE, and MAE. For classification it includes Accuracy, Balanced Accuracy, and Log Loss when probabilities and class labels are available.
+
+## Candidate recommendation
+
+Recommendation is intended as a data-grounded second opinion for selecting the next conditions to test, not as an autonomous claim of a globally optimal formulation.
+
+The workflow supports:
+
+- multiple numeric target properties with `Range`, `At least`, `At most`, `Close to`, `Maximize`, or `Minimize` goals;
+- low/medium/high priority and optional hard constraints;
+- editable search minimum, search maximum, and optional step for each active design variable;
+- a fixed-sum mixture constraint such as `A + B + Filler = 100`;
+- automatic candidate-count suggestions based on effective dimensionality and search-range width;
+- exhaustive enumeration for small fully discrete spaces and space-filling sampling otherwise;
+- optional automatic search expansion while the top shortlist is still improving;
+- median consensus across selected models, with model disagreement reported separately;
+- in-domain, near-edge, and extrapolation diagnostics;
+- Pareto candidates, a diversity-filtered shortlist, and nearest existing experiments for candidate review.
+
+TabFM is intentionally excluded from Recommendation when using the default pretrained weights because those weights are restricted to non-commercial, non-production use. TabFM remains available in Benchmark after explicit license acknowledgement.
+
+Selected Benchmark target columns remain protected from use as Recommendation model inputs, so adding Recommendation does not weaken the existing target-leakage guard.
 
 ## Local Python installation
 
@@ -173,6 +195,7 @@ Tabtester/
 ├── tabtester/
 │   ├── plotting.py
 │   ├── utils.py
+│   ├── recommendation.py
 │   └── backends/
 │       ├── base.py
 │       ├── foundation.py
@@ -193,7 +216,7 @@ Tabtester/
 
 ## Adding another backend
 
-A backend implements the `ModelBackend` interface in `tabtester/backends/base.py` and is registered in `tabtester/backends/registry.py`. The Streamlit benchmark, prediction, and metric code then uses the common interface.
+A backend implements the `ModelBackend` interface in `tabtester/backends/base.py` and is registered in `tabtester/backends/registry.py`. The Streamlit benchmark, prediction, recommendation, and metric code then uses the common interface.
 
 ## Tests
 
