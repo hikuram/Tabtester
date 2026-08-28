@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import gc
 import os
 
@@ -9,12 +8,14 @@ import pandas as pd
 import torch
 
 
-def resolve_device(device: str) -> str:
-    if device == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    if device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was selected, but torch.cuda.is_available() is False.")
-    return device
+MODEL_SET = os.getenv("PREFETCH_FOUNDATION_MODELS", "tabicl").strip().lower()
+ACCEPT_TABFM_LICENSE = os.getenv("ACCEPT_TABFM_LICENSE", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+DEVICE = "cpu"
 
 
 def warm_tabicl(device: str) -> None:
@@ -41,55 +42,41 @@ def warm_tabicl(device: str) -> None:
 def warm_tabfm(device: str) -> None:
     from tabfm import tabfm_v1_0_0_pytorch as tabfm_v1_0_0
 
-    dtype = torch.bfloat16 if device == "cuda" and torch.cuda.is_bf16_supported() else None
-
     print("Caching TabFM regression checkpoint...")
-    reg_base = tabfm_v1_0_0.load(model_type="regression", device=device, dtype=dtype)
+    reg_base = tabfm_v1_0_0.load(model_type="regression", device=device, dtype=None)
     del reg_base
     gc.collect()
 
     print("Caching TabFM classification checkpoint...")
-    clf_base = tabfm_v1_0_0.load(model_type="classification", device=device, dtype=dtype)
+    clf_base = tabfm_v1_0_0.load(model_type="classification", device=device, dtype=None)
     del clf_base
     gc.collect()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Pre-download Tabtester foundation-model checkpoints.")
-    parser.add_argument(
-        "--model",
-        choices=["none", "tabicl", "tabfm", "all"],
-        default=os.getenv("PREFETCH_FOUNDATION_MODELS", "tabicl"),
-    )
-    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
-    parser.add_argument(
-        "--accept-tabfm-license",
-        action="store_true",
-        help="Required before downloading the default TabFM pretrained weights.",
-    )
-    args = parser.parse_args()
+    if MODEL_SET not in {"none", "tabicl", "tabfm", "all"}:
+        raise SystemExit(
+            "PREFETCH_FOUNDATION_MODELS in compose.yaml must be one of: "
+            "none, tabicl, tabfm, all."
+        )
 
-    device = resolve_device(args.device)
-    print(f"device={device}")
+    print(f"device={DEVICE}")
+    print(f"models={MODEL_SET}")
 
-    accepted_tabfm_license = args.accept_tabfm_license or os.getenv(
-        "ACCEPT_TABFM_LICENSE", "0"
-    ).strip().lower() in {"1", "true", "yes", "on"}
-
-    if args.model in ("tabfm", "all") and not accepted_tabfm_license:
+    if MODEL_SET in {"tabfm", "all"} and not ACCEPT_TABFM_LICENSE:
         raise SystemExit(
             "TabFM default pretrained weights are non-commercial/non-production. "
-            "Set ACCEPT_TABFM_LICENSE=1 or use --accept-tabfm-license after reviewing "
+            "Set ACCEPT_TABFM_LICENSE to 1 in compose.yaml only after reviewing "
             "the upstream weight license."
         )
 
-    if args.model == "none":
+    if MODEL_SET == "none":
         print("No foundation models requested.")
         return
-    if args.model in ("tabicl", "all"):
-        warm_tabicl(device)
-    if args.model in ("tabfm", "all"):
-        warm_tabfm(device)
+    if MODEL_SET in {"tabicl", "all"}:
+        warm_tabicl(DEVICE)
+    if MODEL_SET in {"tabfm", "all"}:
+        warm_tabfm(DEVICE)
     print("Model prefetch complete.")
 
 

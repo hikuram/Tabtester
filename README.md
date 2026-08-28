@@ -2,7 +2,7 @@
 
 Tabtester is a Streamlit workbench for comparing tabular foundation models with classical machine-learning baselines on the same CSV dataset.
 
-The project currently supports regression and classification, holdout benchmarking, prediction of new rows, and missing-target imputation. The backend interface is intentionally small so additional tabular models can be added later without expanding the Streamlit app into model-specific branches.
+The project supports regression and classification, holdout benchmarking, prediction of new rows, missing-target imputation, sequential benchmarking of multiple target columns, and data-grounded candidate recommendation for numeric target properties. The backend interface is intentionally small so additional tabular models can be added without expanding the Streamlit app into model-specific branches.
 
 ## Current backends
 
@@ -21,32 +21,33 @@ Tabtester itself is MIT licensed. That does not change the licenses of third-par
 
 The TabFM source code is Apache-2.0, but the default pretrained TabFM weights are distributed under a separate non-commercial, non-production license. Tabtester therefore:
 
-- does not include TabFM weights in the source archive; an opt-in Docker build may embed them in the resulting image;
+- does not include TabFM weights in the source archive or application image;
+- stores downloaded checkpoints separately in the persistent model cache;
 - shows a license warning before TabFM execution;
 - requires an explicit acknowledgement in the UI before the default TabFM weights can be used;
-- requires `--accept-tabfm-license` before the warmup script downloads TabFM weights.
+- keeps TabFM prefetch disabled in the default Compose configuration.
 
-Review the upstream TabFM weight license before use. A separately licensed local TabFM checkpoint can be supplied with `TABFM_CHECKPOINT_PATH`.
+Review the upstream TabFM weight license before use. A separately licensed local TabFM checkpoint can be supplied from the application UI.
 
 ## Docker with NVIDIA NGC
 
-The default image is:
+The image is based on:
 
 ```text
 nvcr.io/nvidia/pytorch:26.05-py3
 ```
 
-This image provides the PyTorch/CUDA stack. Tabtester does not reinstall PyTorch in the NGC image.
+The base image, application port, Japanese support, cache paths, offline runtime mode, and model-prefetch defaults are intentionally written directly in `Dockerfile` or `compose.yaml`. This repository does not use a `.env` file or Compose `${...}` interpolation.
 
-Japanese-specific compatibility is disabled by default. CSV input supports UTF-8, UTF-8 BOM, and BOM-marked UTF-16 without extra dependencies. The CSV parser also exposes compact Encoding and Delimiter selectors, both defaulting to Auto.
+Japanese support is a build-time image choice controlled by one value in `Dockerfile`:
 
-To enable Japanese support, set this in `.env` before building the image:
-
-```text
-ENABLE_JAPANESE_SUPPORT=1
+```dockerfile
+ARG ENABLE_JAPANESE_SUPPORT=0
 ```
 
-When enabled, the Docker build installs Noto CJK fonts, Matplotlib prefers a Japanese-capable font, and CP932 becomes available for CSV input. Auto encoding detection tries CP932 only in this mode. Tabtester uses a dedicated Matplotlib cache and directly registers installed Japanese font files if the cached font list does not contain them. Rebuild the image after changing this option because the font package is selected at build time. The Environment panel should report `Matplotlib font: Noto Sans CJK JP` (or another detected Japanese-capable font).
+The default general-purpose build keeps it disabled. To build a Japanese-capable image, edit that line to `1` before building. When enabled, the Dockerfile installs Noto CJK and writes the Matplotlib font configuration into the image; when disabled, neither is added. The Python application contains no Japanese-support flag, font probing, generated capability file, or configuration module.
+
+CSV decoding is independent of the image font choice: CP932 is a standard Python codec and remains available in both builds. The build option only controls whether the container includes Japanese-capable plotting fonts and Matplotlib defaults.
 
 Requirements on the host:
 
@@ -55,10 +56,9 @@ Requirements on the host:
 - NVIDIA Container Toolkit
 - NGC access for pulling `nvcr.io/nvidia/pytorch`
 
-Create the local environment file, build the app image, prefetch the default foundation-model checkpoints once, and start the app:
+Build the image, prefetch the default TabICLv2 checkpoints once, and start the app:
 
 ```bash
-cp .env.example .env
 docker compose build
 docker compose run --rm model-prefetch
 docker compose up -d
@@ -72,84 +72,111 @@ Open:
 http://localhost:8501
 ```
 
-The Compose GPU reservation is:
-
-```yaml
-deploy:
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: all
-          capabilities: [gpu]
-```
-
 Check the container GPU environment:
 
 ```bash
 docker compose exec tabtester python scripts/check_gpu.py
 ```
 
+## Fixed deployment configuration
+
+The normal deployment profile is deliberately simple and reproducible.
+
+`Dockerfile` fixes:
+
+- NGC base image
+- Japanese support build capability (`ENABLE_JAPANESE_SUPPORT=0` or `1`)
+- Hugging Face, Torch, and XDG cache locations
+- offline Hugging Face runtime
+- Streamlit listen address and port
+- Matplotlib cache directory
+
+`compose.yaml` fixes:
+
+- host port `8501`
+- persistent `/models` cache volume
+- GPU reservation
+- offline network policy for the app service
+- network-enabled model-prefetch service
+- default prefetch target `tabicl`
+- default TabFM prefetch license acknowledgement `0`
+
+If a different deployment profile is needed, edit `Dockerfile` or `compose.yaml` explicitly and rebuild/recreate the service. There is no secondary `.env` layer that can silently change the image or service configuration.
+
 ## Foundation-model checkpoints and offline runtime
 
-Foundation-model downloads are intentionally separated from the Docker image build. The image contains the application and Python dependencies, while model files live in the Compose named volume `model-cache`, mounted at:
+Foundation-model downloads are separated from the Docker image build. The image contains the application and Python dependencies, while model files live in the Compose named volume `model-cache`, mounted at `/models`.
 
-```text
-/models
+The application runs with Hugging Face offline mode enabled. The `model-prefetch` service temporarily enables network access, downloads the requested checkpoints into the shared volume, and exits.
+
+The default `compose.yaml` contains:
+
+```yaml
+PREFETCH_FOUNDATION_MODELS: "tabicl"
+ACCEPT_TABFM_LICENSE: "0"
 ```
 
-The container uses these cache locations:
+To prefetch TabFM as well, review its pretrained-weight license and then edit those two fixed values in `compose.yaml` to:
 
-```text
-HF_HOME=/models/huggingface
-TORCH_HOME=/models/torch
-XDG_CACHE_HOME=/models/xdg
+```yaml
+PREFETCH_FOUNDATION_MODELS: "all"
+ACCEPT_TABFM_LICENSE: "1"
 ```
 
-By default `model-prefetch` downloads TabICLv2 into that volume:
-
-```text
-PREFETCH_FOUNDATION_MODELS=tabicl
-ACCEPT_TABFM_LICENSE=0
-HF_HUB_OFFLINE=1
-```
-
-Run prefetch explicitly whenever a new cache is needed or the requested model set changes:
+Then run:
 
 ```bash
 docker compose run --rm model-prefetch
 ```
 
-The prefetch service uses the same `tabtester:local` image as the app, enables Hugging Face network access only for that run, and exits when checkpoint preparation is complete. Repeated image builds reuse the existing named volume and therefore do not bake the large model files into each image.
+After the cache is populated, return `compose.yaml` to the desired fixed deployment values if necessary and start the application normally.
 
-To prefetch TabICLv2 plus the default TabFM regression/classification weights, first review and accept the TabFM pretrained-weight license, then set:
+If a required checkpoint is missing, the offline application service fails that foundation backend instead of silently downloading at benchmark time.
 
-```text
-PREFETCH_FOUNDATION_MODELS=all
-ACCEPT_TABFM_LICENSE=1
-```
+`docker compose down` keeps the named model cache. `docker compose down -v` removes it.
 
-and run:
+## CSV input
 
-```bash
-docker compose run --rm model-prefetch
-```
+CSV input uses compact Encoding and Delimiter selectors. Auto mode handles UTF-8, UTF-8 BOM, BOM-marked UTF-16, and CP932 without extra charset-detection dependencies, together with comma, tab, and semicolon separators. CP932 decoding does not depend on the Japanese plotting build option.
 
-Runtime remains offline by default. With the requested checkpoints already present in `model-cache`, start the application normally:
+## Using the app
 
-```bash
-docker compose up -d
-```
+1. Upload a CSV file. Encoding and delimiter default to Auto; open `CSV input options` only when manual selection is needed.
+2. Choose one or more complete target columns and optional excluded columns such as IDs. All selected target columns are removed from the feature set for every benchmark target to reduce target leakage.
+3. Select regression or classification.
+4. Select models with the individual sidebar toggles; unavailable backends remain visible but disabled.
+5. Run the holdout benchmark. Selected targets are processed sequentially; a failed model or target does not stop the remaining targets.
+6. Review the benchmark overview, then open target results in completion-order pages.
+7. Use `Predict New Rows` to train one backend on all labeled rows and predict another CSV with the same leakage-safe feature set.
+8. Use `Impute Missing Target` to fill missing target values in place. The pre-imputation target is preserved in an adjacent `<target>__original` backup column, with a numbered suffix if required.
+9. Use `Recommend Candidates` for numeric-property inverse design. Define target goals, editable search ranges, optional discrete steps, and an optional fixed-sum mixture constraint. Tabtester screens candidate conditions with multiple regression backends, reports consensus and model disagreement, and returns a Pareto table plus a diverse shortlist. Recommendation also records total execution time, phase-level timing, and per-model/per-property fit and prediction time so expensive searches can be diagnosed.
 
-If a required checkpoint is missing while `HF_HUB_OFFLINE=1`, the corresponding foundation backend will fail rather than silently downloading during a benchmark. Set `HF_HUB_OFFLINE=0` only when network fallback is intentionally desired.
+For regression the report includes R2, RMSE, and MAE. For classification it includes Accuracy, Balanced Accuracy, and Log Loss when probabilities and class labels are available.
 
-`docker compose down` keeps the named model cache. `docker compose down -v` removes it and should only be used when the cached model files are intentionally being discarded.
+## Candidate recommendation
 
-The benchmark timer starts immediately before `backend.fit(...)`. `Fit Time (s)` therefore still includes local checkpoint deserialization and model preparation, but not network transfer when the persistent cache is populated and runtime offline mode is enabled.
+Recommendation is intended as a data-grounded second opinion for selecting the next conditions to test, not as an autonomous claim of a globally optimal formulation.
+
+The workflow supports:
+
+- multiple numeric target properties with `Range`, `At least`, `At most`, `Close to`, `Maximize`, or `Minimize` goals;
+- low/medium/high priority and optional hard constraints;
+- editable search minimum, search maximum, and optional step for each active design variable;
+- a fixed-sum mixture constraint such as `A + B + Filler = 100`;
+- automatic candidate-count suggestions based on effective dimensionality and search-range width;
+- exhaustive enumeration for small fully discrete spaces and space-filling sampling otherwise;
+- optional automatic search expansion while the top shortlist is still improving;
+- median consensus across selected models, with model disagreement reported separately;
+- in-domain, near-edge, and extrapolation diagnostics;
+- Pareto candidates, a diversity-filtered shortlist, and nearest existing experiments for candidate review.
+
+TabFM is intentionally excluded from Recommendation when using the default pretrained weights because those weights are restricted to non-commercial, non-production use. TabFM remains available in Benchmark after explicit license acknowledgement.
+
+Selected Benchmark target columns remain protected from use as Recommendation model inputs, so adding Recommendation does not weaken the existing target-leakage guard.
 
 ## Local Python installation
 
-Docker is the recommended GPU path. A local environment can be created with:
+Docker is the recommended GPU path. A local environment can still be created with:
 
 ```bash
 python -m venv .venv
@@ -158,26 +185,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-GPU-enabled local PyTorch installation may require a platform-specific PyTorch package/index. The Docker image avoids most CUDA/PyTorch version matching work. For local Python execution, set `ENABLE_JAPANESE_SUPPORT=1` in the process environment if CP932 input and Japanese plot-font selection are needed; `.env` is consumed automatically by Docker Compose, not by the standalone Python command.
-
-## Using the app
-
-1. Upload a CSV file. Encoding and delimiter default to Auto; open `CSV input options` only when manual selection is needed. Auto handles UTF-8, UTF-8 BOM, BOM-marked UTF-16, and common comma/tab/semicolon separators. CP932 is included when Japanese support is enabled.
-2. Review columns excluded from target selection because they contain missing values, then choose one or more complete target columns and optional excluded columns such as IDs. All selected target columns are removed from the feature set for every benchmark target to reduce target leakage.
-3. Select regression or classification.
-4. Select models with the individual sidebar toggles; unavailable backends remain visible but disabled.
-5. Run the holdout benchmark. Selected targets are processed sequentially; a failed model or target does not stop the remaining targets.
-6. Review the benchmark overview, then open target results in completion-order pages to compare metrics, execution time, prediction plots, and per-model errors.
-7. Use `Predict New Rows` to choose one of the selected benchmark targets, train one backend on all labeled rows, and predict another CSV using the same leakage-safe feature set.
-8. Use `Impute Missing Target` to predict missing values in the selected target with a foundation-model backend. The selected target is filled in place, while its pre-imputation values are preserved in an adjacent `<target>__original` backup column (or a numbered variant if that name already exists).
-
-For regression the report includes R2, RMSE, and MAE. For classification it includes Accuracy, Balanced Accuracy, and Log Loss when probabilities and class labels are available.
-
-## Foundation-model notes
-
-TabICLv2 exposes device, ensemble count, batch size, AMP, KV-cache, and offload settings through Tabtester. Very small datasets are still worth testing, but TabICLv2 was pretrained on datasets starting around 300 rows, so results below that size should be validated empirically.
-
-TabFM uses a bounded in-context window. Its estimators default to a limited number of context rows and features, so larger tables are sampled internally rather than consumed as one unlimited context. TabFM v1.0.0 classification supports at most 10 classes.
+A direct local run uses the same CSV parser, including CP932. Plot fonts are left to the local Matplotlib/OS configuration; Tabtester does not probe or alter them. The supported deployment profile is the Docker image described above.
 
 ## Repository structure
 
@@ -187,6 +195,7 @@ Tabtester/
 ├── tabtester/
 │   ├── plotting.py
 │   ├── utils.py
+│   ├── recommendation.py
 │   └── backends/
 │       ├── base.py
 │       ├── foundation.py
@@ -207,7 +216,7 @@ Tabtester/
 
 ## Adding another backend
 
-A backend implements the `ModelBackend` interface in `tabtester/backends/base.py` and is registered in `tabtester/backends/registry.py`. The Streamlit benchmark, prediction, and metric code then uses the common interface.
+A backend implements the `ModelBackend` interface in `tabtester/backends/base.py` and is registered in `tabtester/backends/registry.py`. The Streamlit benchmark, prediction, recommendation, and metric code then uses the common interface.
 
 ## Tests
 

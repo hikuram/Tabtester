@@ -100,18 +100,11 @@ class UtilsTest(unittest.TestCase):
                 "Classification",
             )
 
-    def test_read_csv_rejects_cp932_when_japanese_support_is_disabled(self):
+    def test_read_csv_auto_accepts_cp932(self):
         text = "\u540d\u524d,\u5024\n\u30c6\u30b9\u30c8,1\n"
         uploaded = io.BytesIO(text.encode("cp932"))
 
-        with self.assertRaises(ValueError):
-            read_csv(uploaded)
-
-    def test_read_csv_accepts_cp932_when_japanese_support_is_enabled(self):
-        text = "\u540d\u524d,\u5024\n\u30c6\u30b9\u30c8,1\n"
-        uploaded = io.BytesIO(text.encode("cp932"))
-
-        frame = read_csv(uploaded, enable_japanese_support=True)
+        frame = read_csv(uploaded)
 
         self.assertEqual(frame.columns.tolist(), ["\u540d\u524d", "\u5024"])
         self.assertEqual(frame.iloc[0].tolist(), ["\u30c6\u30b9\u30c8", 1])
@@ -140,12 +133,14 @@ class UtilsTest(unittest.TestCase):
         self.assertEqual(frame.columns.tolist(), ["name", "value"])
         self.assertEqual(frame.iloc[0].tolist(), ["alpha", 1])
 
-    def test_read_csv_manual_cp932_requires_japanese_support(self):
+    def test_read_csv_manual_cp932(self):
         text = "\u540d\u524d,\u5024\n\u30c6\u30b9\u30c8,1\n"
         uploaded = io.BytesIO(text.encode("cp932"))
 
-        with self.assertRaisesRegex(ValueError, "ENABLE_JAPANESE_SUPPORT"):
-            read_csv_with_info(uploaded, encoding_mode="cp932")
+        frame, encoding = read_csv_with_info(uploaded, encoding_mode="cp932")
+
+        self.assertEqual(encoding, "cp932")
+        self.assertEqual(frame.iloc[0].tolist(), ["\u30c6\u30b9\u30c8", 1])
 
     def test_impute_with_backup_fills_target_and_preserves_original(self):
         frame = pd.DataFrame({"id": [1, 2, 3], "target": [10.0, None, 30.0], "x": [4, 5, 6]})

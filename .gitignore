@@ -6,7 +6,6 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
-.env
 .DS_Store
 ag_temp_model/
 AutogluonModels/
