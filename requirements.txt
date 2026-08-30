@@ -1,4 +1,5 @@
 streamlit>=1.59,<2
+altair>=5.5,<6
 torch>=2.12,<2.13
 tabicl==2.1.1
 tabfm[pytorch]==1.0.1
