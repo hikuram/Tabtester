@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import io
+import json
 import math
 from typing import Any
 
@@ -93,6 +94,80 @@ def read_csv(
     )
     return frame
 
+
+
+def _is_missing_scalar(value: Any) -> bool:
+    if value is None or value is pd.NA:
+        return True
+    if isinstance(value, (list, tuple, dict, set, np.ndarray)):
+        return False
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _display_text(value: Any) -> Any:
+    if _is_missing_scalar(value):
+        return pd.NA
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, (dict, list, tuple, set, np.ndarray)):
+        try:
+            normalized = value.tolist() if isinstance(value, np.ndarray) else value
+            if isinstance(normalized, set):
+                normalized = sorted(normalized, key=str)
+            return json.dumps(normalized, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def arrow_safe_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a display-only DataFrame with PyArrow-compatible column types.
+
+    Streamlit serializes dataframes through PyArrow. Mixed pandas object
+    columns can contain values that cannot be represented by one Arrow type.
+    Preserve numeric, boolean, and datetime columns; convert ambiguous object
+    or categorical columns to a consistent pandas string dtype for display.
+    The source DataFrame is not modified.
+    """
+    safe = df.copy()
+    for column in safe.columns:
+        series = safe[column]
+        dtype = series.dtype
+
+        if isinstance(dtype, pd.CategoricalDtype):
+            safe[column] = series.map(_display_text).astype("string")
+            continue
+        if pd.api.types.is_complex_dtype(dtype):
+            safe[column] = series.map(_display_text).astype("string")
+            continue
+        if isinstance(dtype, (pd.PeriodDtype, pd.IntervalDtype)):
+            safe[column] = series.map(_display_text).astype("string")
+            continue
+        if not pd.api.types.is_object_dtype(dtype):
+            continue
+
+        non_missing = [value for value in series.tolist() if not _is_missing_scalar(value)]
+        if not non_missing:
+            safe[column] = series.map(_display_text).astype("string")
+            continue
+        if all(isinstance(value, (bool, np.bool_)) for value in non_missing):
+            safe[column] = series.astype("boolean")
+            continue
+        if all(
+            isinstance(value, (int, float, complex, np.number))
+            and not isinstance(value, (bool, np.bool_))
+            for value in non_missing
+        ):
+            safe[column] = pd.to_numeric(series, errors="coerce")
+            continue
+        safe[column] = series.map(_display_text).astype("string")
+
+    return safe
 
 
 def complete_target_columns(df: pd.DataFrame) -> list[str]:
