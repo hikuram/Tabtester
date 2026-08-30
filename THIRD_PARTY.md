@@ -24,7 +24,7 @@ The NVIDIA NGC PyTorch container is distributed by NVIDIA and is subject to NVID
 
 ## Other Python dependencies
 
-XGBoost, LightGBM, CatBoost, Optuna, FLAML, SHAP, Streamlit, PyTorch, pandas, NumPy, scikit-learn, Matplotlib, AutoGluon, and their transitive dependencies remain subject to their own licenses.
+XGBoost, LightGBM, CatBoost, Optuna, FLAML, SHAP, Streamlit, Altair, PyTorch, pandas, NumPy, scikit-learn, Matplotlib, AutoGluon, and their transitive dependencies remain subject to their own licenses.
 
 ## Noto CJK fonts
 
