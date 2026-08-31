@@ -146,12 +146,42 @@ CSV input uses compact Encoding and Delimiter selectors. Auto mode handles UTF-8
 3. Select regression or classification.
 4. Select models with the individual sidebar toggles; unavailable backends remain visible but disabled.
 5. Run the holdout benchmark. Selected targets are processed sequentially; a failed model or target does not stop the remaining targets.
-6. Review the benchmark overview, then open target results in completion-order pages.
-7. Use `Predict New Rows` to train one backend on all labeled rows and predict another CSV with the same leakage-safe feature set.
-8. Use `Impute Missing Target` to fill missing target values in place. The pre-imputation target is preserved in an adjacent `<target>__original` backup column, with a numbered suffix if required.
-9. Use `Recommend Candidates` for numeric-property inverse design. Define target goals, editable search ranges, optional discrete steps, and an optional fixed-sum mixture constraint. Tabtester screens candidate conditions with multiple regression backends, reports consensus and model disagreement, and returns a Pareto table plus a diverse shortlist. Recommendation also records total execution time, phase-level timing, and per-model/per-property fit and prediction time so expensive searches can be diagnosed.
+6. Review the benchmark overview and download the primary `Download complete results (.zip)` artifact when a run should be retained. Individual target CSV downloads remain available.
+7. Open target results in completion-order pages for detailed inspection.
+8. Use `Predict New Rows` to train one backend on all labeled rows and predict another CSV with the same leakage-safe feature set.
+9. Use `Impute Missing Target` to fill missing target values in place. The pre-imputation target is preserved in an adjacent `<target>__original` backup column, with a numbered suffix if required.
+10. Use `Recommend Candidates` for numeric-property inverse design. Define target goals, editable search ranges, optional discrete steps, and an optional fixed-sum mixture constraint. Tabtester screens candidate conditions with multiple regression backends, reports consensus and model disagreement, and returns a Pareto table plus a diverse shortlist. Recommendation also records total execution time, phase-level timing, and per-model/per-property fit and prediction time so expensive searches can be diagnosed.
 
 For regression the report includes R2, RMSE, and MAE. For classification it includes Accuracy, Balanced Accuracy, and Log Loss when probabilities and class labels are available.
+
+
+## Complete benchmark export
+
+Each completed Benchmark and Evaluation run can be downloaded as one ZIP archive without rerunning any model. The complete ZIP is the primary benchmark download, while the existing per-target prediction CSV downloads remain available for quick access.
+
+The archive contains:
+
+```text
+tabtester_benchmark_YYYYMMDD_HHMMSS_UTC.zip
+├── run_settings.csv
+├── benchmark_summary.csv
+├── failures.csv
+├── 01_<target>/
+│   ├── metrics.csv
+│   ├── predictions.csv
+│   ├── metric_comparison.png
+│   ├── execution_time.png
+│   ├── actual_vs_predicted.png      # regression
+│   ├── confusion_matrix.png         # classification
+│   ├── shap_<model>.png             # when available
+│   └── errors.csv                   # when needed
+├── export_errors.csv                # only if an artifact could not be rendered
+└── ...
+```
+
+`run_settings.csv` is stored as `Section, Setting, Value` rows so new settings can be added without changing a wide one-row schema. It records the run timestamps and elapsed time, application source fingerprint, source CSV filename and SHA256, parser settings, dataset shape and column names, missing-cell count, task, all target and excluded columns, selected models, train/test fractions, the random seed, leakage-guard policy, foundation-model settings, Optuna/AutoML settings, per-target split sizes, and relevant Python/package/CUDA/GPU information.
+
+`benchmark_summary.csv` contains one row per target/model evaluation, including metrics, fit/predict time, status, and error text. `failures.csv` keeps failed target/model evaluations visible rather than silently dropping them. The uploaded source CSV itself is not copied into the archive.
 
 ## Candidate recommendation
 
@@ -194,6 +224,7 @@ Tabtester/
 ├── app.py
 ├── tabtester/
 │   ├── plotting.py
+│   ├── export.py
 │   ├── utils.py
 │   ├── recommendation.py
 │   └── backends/
