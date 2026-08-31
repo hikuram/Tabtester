@@ -15,6 +15,7 @@ from tabtester.utils import (
     read_csv_with_info,
     regression_metrics,
     safe_stratify,
+    target_columns_with_observations,
 )
 
 
@@ -43,6 +44,16 @@ class UtilsTest(unittest.TestCase):
         frame = pd.DataFrame({"complete": [1.0, 2.0], "missing": [1.0, None]})
         self.assertEqual(complete_target_columns(frame), ["complete"])
 
+    def test_target_columns_with_observations_keeps_partially_missing_columns(self):
+        frame = pd.DataFrame(
+            {
+                "complete": [1.0, 2.0],
+                "partial": [1.0, None],
+                "empty": [None, None],
+            }
+        )
+        self.assertEqual(target_columns_with_observations(frame), ["complete", "partial"])
+
     def test_missing_column_summary_reports_counts(self):
         frame = pd.DataFrame({"a": [1.0, None], "b": [None, None], "c": [1.0, 2.0]})
         summary = missing_column_summary(frame)
@@ -69,6 +80,69 @@ class UtilsTest(unittest.TestCase):
 
         self.assertEqual(list(X.columns), ["feature_a"])
         self.assertEqual(y.tolist(), [10.0, 20.0, 30.0])
+
+    def test_prepare_benchmark_target_drops_only_rows_missing_current_target(self):
+        frame = pd.DataFrame(
+            {
+                "feature": [1, 2, 3, 4],
+                "target_a": [10.0, None, 30.0, 40.0],
+                "target_b": [None, 200.0, 300.0, None],
+            },
+            index=[10, 11, 12, 13],
+        )
+
+        X_a, y_a = prepare_benchmark_target(
+            frame,
+            "target_a",
+            ["target_a", "target_b"],
+            [],
+            "Regression",
+        )
+        X_b, y_b = prepare_benchmark_target(
+            frame,
+            "target_b",
+            ["target_a", "target_b"],
+            [],
+            "Regression",
+        )
+
+        self.assertEqual(X_a.index.tolist(), [10, 12, 13])
+        self.assertEqual(y_a.tolist(), [10.0, 30.0, 40.0])
+        self.assertEqual(X_b.index.tolist(), [11, 12])
+        self.assertEqual(y_b.tolist(), [200.0, 300.0])
+        self.assertEqual(list(X_a.columns), ["feature"])
+        self.assertEqual(list(X_b.columns), ["feature"])
+
+    def test_prepare_benchmark_target_drops_missing_classification_labels(self):
+        frame = pd.DataFrame(
+            {
+                "feature": [1, 2, 3, 4],
+                "target": ["a", None, "b", "a"],
+            }
+        )
+
+        X, y = prepare_benchmark_target(
+            frame,
+            "target",
+            ["target"],
+            [],
+            "Classification",
+        )
+
+        self.assertEqual(X.index.tolist(), [0, 2, 3])
+        self.assertEqual(y.tolist(), ["a", "b", "a"])
+
+    def test_prepare_benchmark_target_rejects_all_missing_target(self):
+        frame = pd.DataFrame({"feature": [1, 2], "target": [None, None]})
+
+        with self.assertRaisesRegex(ValueError, "no observed values"):
+            prepare_benchmark_target(
+                frame,
+                "target",
+                ["target"],
+                [],
+                "Regression",
+            )
 
     def test_prepare_benchmark_target_rejects_non_numeric_regression_target(self):
         frame = pd.DataFrame(
