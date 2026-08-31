@@ -4,7 +4,11 @@ import hashlib
 import importlib.metadata
 import io
 import os
+import platform
+import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import altair as alt
@@ -22,6 +26,7 @@ from tabtester.backends import (
     make_backend,
     registered_model_names,
 )
+from tabtester.export import build_benchmark_zip, run_settings_frame
 from tabtester.plotting import plot_classification, plot_regression
 from tabtester.recommendation import (
     GOAL_TYPES,
@@ -103,6 +108,163 @@ def package_version(name: str) -> str:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return "not installed"
+
+
+def application_source_fingerprint() -> str:
+    root = Path(__file__).resolve().parent
+    paths = [root / "app.py"] + sorted((root / "tabtester").rglob("*.py"))
+    digest = hashlib.sha256()
+    for path in paths:
+        if not path.is_file():
+            continue
+        digest.update(str(path.relative_to(root)).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def benchmark_run_settings_sections(
+    *,
+    run_started_utc: str,
+    run_completed_utc: str,
+    elapsed_seconds: float,
+    dataset_signature: str,
+    source_sha256: str,
+    source_name: str,
+    source_df: pd.DataFrame,
+    requested_encoding: str,
+    used_encoding: str,
+    delimiter_mode: str,
+    task: str,
+    benchmark_targets: Sequence[str],
+    excluded: Sequence[str],
+    selected_models: Sequence[str],
+    test_size: float,
+    random_state: int,
+    device: str,
+    n_trials: int,
+    time_budget: int,
+    tabicl_n_estimators: int,
+    tabicl_batch_size: int,
+    tabicl_kv_cache: bool | str,
+    tabicl_use_amp: bool | str,
+    tabicl_offload_mode: bool | str,
+    tabfm_checkpoint_path: str | None,
+    outputs: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    cuda_available = torch.cuda.is_available()
+    gpu_name = torch.cuda.get_device_name(0) if cuda_available else ""
+    bf16_supported = torch.cuda.is_bf16_supported() if cuda_available else False
+
+    sections: dict[str, dict[str, Any]] = {
+        "Run": {
+            "Started UTC": run_started_utc,
+            "Completed UTC": run_completed_utc,
+            "Elapsed seconds": f"{elapsed_seconds:.6f}",
+            "Application source SHA256": application_source_fingerprint(),
+        },
+        "Dataset": {
+            "Source file": source_name,
+            "Source file SHA256": source_sha256,
+            "Dataset signature": dataset_signature,
+            "Rows": len(source_df),
+            "Columns": len(source_df.columns),
+            "Column names": list(source_df.columns),
+            "Missing cells": int(source_df.isna().sum().sum()),
+            "Requested encoding": requested_encoding,
+            "Detected encoding": used_encoding,
+            "Delimiter mode": delimiter_mode,
+        },
+        "Benchmark": {
+            "Task": task,
+            "Target columns": list(benchmark_targets),
+            "Excluded columns": list(excluded),
+            "Selected models": list(selected_models),
+            "Train fraction": 1.0 - test_size,
+            "Test fraction": test_size,
+            "Random seed": random_state,
+            "Leakage guard": "All selected target columns excluded from every feature set",
+        },
+        "Foundation models": {
+            "Device": device,
+            "TabICLv2 estimators": tabicl_n_estimators,
+            "TabICLv2 batch size": tabicl_batch_size,
+            "TabICLv2 KV cache": tabicl_kv_cache,
+            "TabICLv2 AMP": tabicl_use_amp,
+            "TabICLv2 offload mode": tabicl_offload_mode,
+            "TabFM checkpoint": tabfm_checkpoint_path or "default Hugging Face checkpoint",
+        },
+        "AutoML and tuning": {
+            "Optuna trials": n_trials,
+            "AutoML time budget seconds": time_budget,
+        },
+        "Environment": {
+            "Python": sys.version.split()[0],
+            "Platform": platform.platform(),
+            "torch": package_version("torch"),
+            "streamlit": package_version("streamlit"),
+            "pandas": package_version("pandas"),
+            "numpy": package_version("numpy"),
+            "scikit-learn": package_version("scikit-learn"),
+            "pyarrow": package_version("pyarrow"),
+            "tabicl": package_version("tabicl"),
+            "tabfm": package_version("tabfm"),
+            "xgboost": package_version("xgboost"),
+            "lightgbm": package_version("lightgbm"),
+            "catboost": package_version("catboost"),
+            "optuna": package_version("optuna"),
+            "flaml": package_version("flaml"),
+            "autogluon.tabular": package_version("autogluon.tabular"),
+            "matplotlib": package_version("matplotlib"),
+            "altair": package_version("altair"),
+            "shap": package_version("shap"),
+            "scipy": package_version("scipy"),
+            "CUDA runtime": torch.version.cuda or "",
+            "CUDA available": cuda_available,
+            "GPU": gpu_name,
+            "BF16 supported": bf16_supported,
+            "HF_HUB_OFFLINE": os.getenv("HF_HUB_OFFLINE", "0"),
+            "HF_HOME": os.getenv("HF_HOME", ""),
+            "TABTESTER_MODEL_CACHE": os.getenv("TABTESTER_MODEL_CACHE", "/models"),
+        },
+    }
+
+    for order, output in enumerate(outputs, start=1):
+        target = str(output.get("target", f"target_{order}"))
+        sections[f"Target {order}: {target}"] = {
+            "Status": output.get("status", ""),
+            "Rows after target preparation": output.get("prepared_rows", ""),
+            "Train rows": output.get("train_rows", ""),
+            "Test rows": output.get("test_rows", ""),
+            "Feature count": len(output.get("feature_columns", [])),
+            "Stratified split": output.get("stratified_split", False),
+            "Models requested": output.get("requested_models", 0),
+            "Models completed": output.get("completed_models", 0),
+        }
+
+    return sections
+
+
+def benchmark_signature(
+    task: str,
+    targets: Sequence[str],
+    excluded: Sequence[str],
+    selected_models: Sequence[str],
+    test_size: float,
+    config: BackendConfig,
+) -> str:
+    payload = "|".join(
+        [
+            task,
+            ",".join(targets),
+            ",".join(excluded),
+            ",".join(selected_models),
+            f"{test_size:.12g}",
+            repr(config),
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def recommendation_signature(
@@ -361,6 +523,11 @@ def render_benchmark_results(
     outputs: list[dict[str, Any]],
     task: str,
     source_df: pd.DataFrame,
+    *,
+    archive_bytes: bytes | None = None,
+    archive_name: str | None = None,
+    run_settings: pd.DataFrame | None = None,
+    export_error: str = "",
 ) -> None:
     if not outputs:
         return
@@ -370,6 +537,27 @@ def render_benchmark_results(
     score_column = "Best R2" if task == "Regression" else "Best Accuracy"
     formatters = {score_column: "{:.4f}"}
     st.dataframe(overview.style.format(formatters, na_rep=""), hide_index=True, width="stretch")
+
+    if archive_bytes is not None and archive_name:
+        st.download_button(
+            "Download complete results (.zip)",
+            data=archive_bytes,
+            file_name=archive_name,
+            mime="application/zip",
+            type="primary",
+            width="stretch",
+            key="benchmark_complete_zip_download",
+        )
+        st.caption(
+            "Includes run_settings.csv, benchmark_summary.csv, failures.csv, and all benchmark CSV/PNG outputs. "
+            "The uploaded source CSV is not included."
+        )
+    elif export_error:
+        st.warning(f"Complete ZIP export could not be created: {export_error}")
+
+    if isinstance(run_settings, pd.DataFrame) and not run_settings.empty:
+        with st.expander("Run settings stored in ZIP", expanded=False):
+            st.dataframe(arrow_safe_dataframe(run_settings), hide_index=True, width="stretch")
 
     page_options = list(range(len(outputs)))
     if st.session_state.get("benchmark_result_page") not in page_options:
@@ -1369,6 +1557,7 @@ def main() -> None:
         return
 
     raw_train = train_file.getvalue()
+    source_sha256 = hashlib.sha256(raw_train).hexdigest()
     signature_payload = raw_train + f"\0{train_encoding}\0{train_delimiter}".encode("utf-8")
     dataset_signature = hashlib.sha256(signature_payload).hexdigest()
     try:
@@ -1477,6 +1666,14 @@ def main() -> None:
             "When HF Hub is offline and checkpoints were prefetched into the persistent model cache, network download time is zero."
         )
         test_size = st.slider("Test fraction", 0.05, 0.5, DEFAULT_TEST_SIZE, 0.05)
+        current_benchmark_signature = benchmark_signature(
+            task,
+            benchmark_targets,
+            excluded,
+            selected_models,
+            test_size,
+            config,
+        )
 
         if "TabICLv2" in selected_models and len(df) < 300:
             st.warning(
@@ -1504,6 +1701,9 @@ def main() -> None:
             if not selected_models:
                 st.warning("Select at least one model.")
             elif validate_tabfm_use(selected_models, tabfm_ack, tabfm_checkpoint_path):
+                run_started_dt = datetime.now(timezone.utc)
+                run_started_utc = run_started_dt.isoformat(timespec="seconds")
+                run_perf_start = time.perf_counter()
                 outputs: list[dict[str, Any]] = []
                 total_steps = max(1, len(benchmark_targets) * len(selected_models))
                 progress = st.progress(0.0, text="Running benchmark...")
@@ -1621,6 +1821,10 @@ def main() -> None:
                                 "y_test": np.asarray(y_test),
                                 "test_index": X_test.index.tolist(),
                                 "feature_columns": list(X_test.columns),
+                                "prepared_rows": len(X_target),
+                                "train_rows": len(X_train),
+                                "test_rows": len(X_test),
+                                "stratified_split": stratify is not None,
                                 "completed_models": completed_models,
                                 "model_errors": model_errors,
                                 "shap_image": shap_image,
@@ -1639,10 +1843,14 @@ def main() -> None:
                     outputs.append(target_output)
                     st.session_state["benchmark_output"] = {
                         "dataset_signature": dataset_signature,
+                        "config_signature": current_benchmark_signature,
                         "targets": list(benchmark_targets),
                         "excluded": list(excluded),
                         "task": task,
                         "outputs": outputs.copy(),
+                        "archive_bytes": None,
+                        "archive_name": None,
+                        "run_settings": None,
                     }
                     live_overview.dataframe(
                         benchmark_overview(outputs, task),
@@ -1656,6 +1864,68 @@ def main() -> None:
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
 
+                run_completed_dt = datetime.now(timezone.utc)
+                run_completed_utc = run_completed_dt.isoformat(timespec="seconds")
+                run_elapsed_seconds = time.perf_counter() - run_perf_start
+                run_settings = run_settings_frame(
+                    benchmark_run_settings_sections(
+                        run_started_utc=run_started_utc,
+                        run_completed_utc=run_completed_utc,
+                        elapsed_seconds=run_elapsed_seconds,
+                        dataset_signature=dataset_signature,
+                        source_sha256=source_sha256,
+                        source_name=getattr(train_file, "name", "uploaded.csv"),
+                        source_df=df,
+                        requested_encoding=train_encoding,
+                        used_encoding=used_encoding,
+                        delimiter_mode=train_delimiter,
+                        task=task,
+                        benchmark_targets=benchmark_targets,
+                        excluded=excluded,
+                        selected_models=selected_models,
+                        test_size=test_size,
+                        random_state=random_state,
+                        device=device,
+                        n_trials=n_trials,
+                        time_budget=time_budget,
+                        tabicl_n_estimators=tabicl_n_estimators,
+                        tabicl_batch_size=tabicl_batch_size,
+                        tabicl_kv_cache=tabicl_kv_cache,
+                        tabicl_use_amp=tabicl_use_amp,
+                        tabicl_offload_mode=tabicl_offload_mode,
+                        tabfm_checkpoint_path=tabfm_checkpoint_path,
+                        outputs=outputs,
+                    )
+                )
+                archive_name = (
+                    "tabtester_benchmark_"
+                    + run_completed_dt.strftime("%Y%m%d_%H%M%S_UTC")
+                    + ".zip"
+                )
+                archive_bytes: bytes | None = None
+                export_error = ""
+                try:
+                    archive_bytes = build_benchmark_zip(
+                        outputs,
+                        task,
+                        df,
+                        run_settings,
+                    )
+                except Exception as exc:
+                    export_error = str(exc)
+
+                st.session_state["benchmark_output"] = {
+                    "dataset_signature": dataset_signature,
+                    "config_signature": current_benchmark_signature,
+                    "targets": list(benchmark_targets),
+                    "excluded": list(excluded),
+                    "task": task,
+                    "outputs": outputs.copy(),
+                    "archive_bytes": archive_bytes,
+                    "archive_name": archive_name,
+                    "run_settings": run_settings,
+                    "export_error": export_error,
+                }
                 progress.empty()
                 live_overview.empty()
 
@@ -1666,8 +1936,17 @@ def main() -> None:
             and stored.get("targets") == list(benchmark_targets)
             and stored.get("excluded") == list(excluded)
             and stored.get("task") == task
+            and stored.get("config_signature") == current_benchmark_signature
         ):
-            render_benchmark_results(stored.get("outputs", []), task, df)
+            render_benchmark_results(
+                stored.get("outputs", []),
+                task,
+                df,
+                archive_bytes=stored.get("archive_bytes"),
+                archive_name=stored.get("archive_name"),
+                run_settings=stored.get("run_settings"),
+                export_error=stored.get("export_error", ""),
+            )
 
     with tab_predict:
         st.markdown("### Predict new rows")
