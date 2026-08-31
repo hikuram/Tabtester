@@ -44,7 +44,7 @@ from tabtester.utils import (
     align_feature_columns,
     arrow_safe_dataframe,
     classification_metrics,
-    complete_target_columns,
+    target_columns_with_observations,
     csv_bytes,
     impute_with_backup,
     missing_column_summary,
@@ -235,6 +235,7 @@ def benchmark_run_settings_sections(
         sections[f"Target {order}: {target}"] = {
             "Status": output.get("status", ""),
             "Rows after target preparation": output.get("prepared_rows", ""),
+            "Rows dropped for missing target": output.get("dropped_target_rows", ""),
             "Train rows": output.get("train_rows", ""),
             "Test rows": output.get("test_rows", ""),
             "Feature count": len(output.get("feature_columns", [])),
@@ -426,6 +427,8 @@ def benchmark_overview(outputs: list[dict[str, Any]], task: str) -> pd.DataFrame
                 "Status": output.get("status", ""),
                 "Best model": best_model,
                 f"Best {metric}": best_score,
+                "Rows used": output.get("prepared_rows", ""),
+                "Missing target rows dropped": output.get("dropped_target_rows", ""),
                 "Models completed": output.get("completed_models", 0),
                 "Models requested": output.get("requested_models", 0),
                 "Errors": error_text,
@@ -459,6 +462,13 @@ def render_benchmark_target_result(
     status = str(output.get("status", ""))
     st.markdown(f"### Target: {target}")
     st.caption(f"Status: {status}")
+    prepared_rows = output.get("prepared_rows")
+    dropped_rows = output.get("dropped_target_rows")
+    if prepared_rows is not None and dropped_rows is not None:
+        st.caption(
+            f"Rows used for this target: {prepared_rows:,} | "
+            f"Rows dropped for missing target: {dropped_rows:,}"
+        )
 
     results_df = output.get("results")
     if not isinstance(results_df, pd.DataFrame) or results_df.empty:
@@ -1583,11 +1593,13 @@ def main() -> None:
     st.subheader("Data preview")
     st.dataframe(arrow_safe_dataframe(df.head(100)), width="stretch")
 
-    target_candidates = complete_target_columns(df)
+    target_candidates = target_columns_with_observations(df)
     missing_targets = missing_column_summary(df)
     if not missing_targets.empty:
         st.warning(
-            f"{len(missing_targets)} column(s) contain missing values and are excluded from Target columns."
+            f"{len(missing_targets)} column(s) contain missing values. "
+            "Partially observed columns remain selectable as Target columns; rows missing the target "
+            "currently being evaluated are dropped only for that target. Entirely empty columns are not selectable."
         )
         st.dataframe(
             missing_targets.style.format({"Missing %": "{:.1f}%"}),
@@ -1596,7 +1608,7 @@ def main() -> None:
         )
 
     if not target_candidates:
-        st.error("No complete data column is available for Target columns.")
+        st.error("No column with observed values is available for Target columns.")
         return
 
     benchmark_targets = st.multiselect(
@@ -1604,8 +1616,9 @@ def main() -> None:
         target_candidates,
         default=[target_candidates[-1]],
         help=(
-            "Select one or more complete target columns. Every selected target is removed "
-            "from the feature set for every benchmark target."
+            "Select one or more target columns. For each target, rows where that target is missing are "
+            "dropped only for that benchmark. Every selected target is removed from the feature set for "
+            "every benchmark target."
         ),
     )
     if not benchmark_targets:
@@ -1675,11 +1688,18 @@ def main() -> None:
             config,
         )
 
-        if "TabICLv2" in selected_models and len(df) < 300:
-            st.warning(
-                "TabICLv2 was pretrained on datasets starting around 300 rows; smaller datasets "
-                "should be treated as an empirical test case."
-            )
+        if "TabICLv2" in selected_models:
+            small_targets = [
+                target
+                for target in benchmark_targets
+                if int(df[target].notna().sum()) < 300
+            ]
+            if small_targets:
+                st.warning(
+                    "TabICLv2 was pretrained on datasets starting around 300 rows; targets with fewer "
+                    "labeled rows should be treated as empirical test cases: "
+                    + ", ".join(small_targets)
+                )
         if "TabFM" in selected_models and len(df) > 100:
             st.info(
                 "TabFM uses a bounded context window and samples context rows when the training table "
@@ -1689,7 +1709,7 @@ def main() -> None:
             oversized_targets = [
                 target
                 for target in benchmark_targets
-                if df[target].nunique(dropna=False) > 10
+                if df[target].nunique(dropna=True) > 10
             ]
             if oversized_targets:
                 st.warning(
@@ -1822,6 +1842,7 @@ def main() -> None:
                                 "test_index": X_test.index.tolist(),
                                 "feature_columns": list(X_test.columns),
                                 "prepared_rows": len(X_target),
+                                "dropped_target_rows": len(df) - len(X_target),
                                 "train_rows": len(X_train),
                                 "test_rows": len(X_test),
                                 "stratified_split": stratify is not None,
@@ -2025,7 +2046,8 @@ def main() -> None:
     with tab_impute:
         st.markdown("### Missing target imputation")
         st.caption(
-            "Benchmark targets must be complete. Select a column with missing values here to impute it separately."
+            "Benchmark and prediction can use the observed rows without filling missing target values. "
+            "Use this tab only when you want to estimate and fill those missing target cells in an exported dataset."
         )
         impute_target_options = [
             str(column)
