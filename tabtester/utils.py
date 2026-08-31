@@ -176,6 +176,12 @@ def complete_target_columns(df: pd.DataFrame) -> list[str]:
     return [str(column) for column in df.columns if not bool(missing[column])]
 
 
+def target_columns_with_observations(df: pd.DataFrame) -> list[str]:
+    """Return columns that contain at least one observed value, preserving source order."""
+    observed = df.notna().any(axis=0)
+    return [str(column) for column in df.columns if bool(observed[column])]
+
+
 def prepare_benchmark_target(
     df: pd.DataFrame,
     target: str,
@@ -192,11 +198,16 @@ def prepare_benchmark_target(
         if column in df.columns and column not in drop_columns:
             drop_columns.append(column)
 
-    X = df.drop(columns=drop_columns).copy()
+    labeled_mask = df[target].notna()
+    if not bool(labeled_mask.any()):
+        raise ValueError("Target contains no observed values.")
+
+    prepared = df.loc[labeled_mask]
+    X = prepared.drop(columns=drop_columns).copy()
     if X.shape[1] == 0:
         raise ValueError("No feature columns remain after target and column exclusions.")
 
-    y = df[target].copy()
+    y = prepared[target].copy()
     if task == "Regression":
         y_numeric = pd.to_numeric(y, errors="coerce")
         if y_numeric.isna().any():
@@ -212,7 +223,7 @@ def prepare_benchmark_target(
 
 
 def missing_column_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Summarize columns excluded from target selection due to missing values."""
+    """Summarize missing values by column for pre-run data quality review."""
     counts = df.isna().sum(axis=0)
     rows = []
     for column in df.columns:
