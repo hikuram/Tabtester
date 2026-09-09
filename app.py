@@ -1578,7 +1578,7 @@ def main() -> None:
             n_trials = st.slider("Optuna trials", min_value=5, max_value=50, value=10, step=5)
             time_budget = st.slider("AutoML time budget (seconds)", min_value=10, max_value=300, value=30, step=10)
 
-    if not benchmark_available_models:
+    if not available_models:
         st.error("No model backend is available. Install at least one supported backend.")
         return
 
