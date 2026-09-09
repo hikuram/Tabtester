@@ -20,6 +20,9 @@ class BackendConfig:
     tabicl_use_amp: bool | str = "auto"
     tabicl_offload_mode: bool | str = "auto"
     tabfm_checkpoint_path: str | None = None
+    gp_max_iter: int = 150
+    gp_lr: float = 0.1
+    gp_mll_weight: float = 0.5
 
 
 class ModelBackend(ABC):

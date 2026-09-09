@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from .base import BackendConfig, ModelBackend
 from .foundation import TabFMBackend, TabICLv2Backend
+from .gaussian_process import GenericMaternGPBackend
 from .traditional import (
     AutoGluonBackend,
     CatBoostBackend,
@@ -21,6 +22,7 @@ class ModelSpec:
     family: str
     dependencies: tuple[str, ...]
     backend_class: type[ModelBackend]
+    tasks: tuple[str, ...] = ("Regression", "Classification")
 
 
 MODEL_SPECS = (
@@ -29,6 +31,13 @@ MODEL_SPECS = (
     ModelSpec("XGBoost (Default)", "traditional", ("xgboost",), XGBoostDefaultBackend),
     ModelSpec("LightGBM", "traditional", ("lightgbm",), LightGBMBackend),
     ModelSpec("CatBoost", "traditional", ("catboost",), CatBoostBackend),
+    ModelSpec(
+        "GP (Generic Matern)",
+        "gaussian_process",
+        ("torch",),
+        GenericMaternGPBackend,
+        ("Regression",),
+    ),
     ModelSpec("XGBoost (Tuned)", "automl", ("xgboost", "optuna"), XGBoostTunedBackend),
     ModelSpec("FLAML", "automl", ("flaml",), FLAMLBackend),
     ModelSpec("AutoGluon", "automl", ("autogluon.tabular",), AutoGluonBackend),
@@ -47,22 +56,32 @@ def registered_model_names() -> list[str]:
     return [spec.name for spec in MODEL_SPECS]
 
 
-def available_model_names() -> list[str]:
+def model_supports_task(name: str, task: str) -> bool:
+    for spec in MODEL_SPECS:
+        if spec.name == name:
+            return task in spec.tasks
+    raise KeyError(f"Unknown model backend: {name}")
+
+
+def available_model_names(task: str | None = None) -> list[str]:
     return [
         spec.name
         for spec in MODEL_SPECS
         if all(_module_available(module) for module in spec.dependencies)
+        and (task is None or task in spec.tasks)
     ]
 
 
-def foundation_model_names() -> list[str]:
-    available = set(available_model_names())
+def foundation_model_names(task: str | None = None) -> list[str]:
+    available = set(available_model_names(task))
     return [spec.name for spec in MODEL_SPECS if spec.family == "foundation" and spec.name in available]
 
 
 def make_backend(name: str, config: BackendConfig) -> ModelBackend:
     for spec in MODEL_SPECS:
         if spec.name == name:
+            if config.task not in spec.tasks:
+                raise ValueError(f"{name} does not support {config.task}.")
             missing = [module for module in spec.dependencies if not _module_available(module)]
             if missing:
                 raise ImportError(f"Missing dependencies for {name}: {missing}")

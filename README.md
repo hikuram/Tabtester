@@ -1,6 +1,6 @@
 # Tabtester
 
-Tabtester is a Streamlit workbench for comparing tabular foundation models with classical machine-learning baselines on the same CSV dataset.
+Tabtester is a Streamlit workbench for comparing tabular foundation models, Gaussian Process regression, and classical machine-learning baselines on the same CSV dataset.
 
 The project supports regression and classification, holdout benchmarking, prediction of new rows, missing-target imputation, sequential benchmarking of multiple target columns, and data-grounded candidate recommendation for numeric target properties. The backend interface is intentionally small so additional tabular models can be added without expanding the Streamlit app into model-specific branches.
 
@@ -11,9 +11,19 @@ The project supports regression and classification, holdout benchmarking, predic
 - XGBoost
 - LightGBM
 - CatBoost
+- GP (Generic Matern) for regression
 - Tuned XGBoost with Optuna
 - FLAML
 - AutoGluon Tabular when installed separately
+
+
+### Gaussian Process regression
+
+`GP (Generic Matern)` is a regular regression backend intended mainly for small and moderate tabular datasets. It uses an exact Gaussian Process with an ARD Matern-5/2 kernel. Input features are dummy-encoded, numeric missing values are filled from training-set medians, and every encoded feature is min-max scaled using training data only.
+
+The GP uses the same target-specific train/test split as the other Benchmark models. Its fixed training objective is 50% analytical observation-LOO predictive NLL + 50% exact marginal-likelihood NLL, optimized with PyTorch LBFGS for up to 150 iterations. `LOO NLL (scaled)` is included in Benchmark output as a diagnostic.
+
+The backend is available for Regression in Benchmark, Predict New Rows, and Recommend Candidates. It is disabled for Classification. Missing Target Imputation remains limited to foundation-model backends by design. Exact GP training scales cubically with the number of labeled rows, so this backend is not intended as the default choice for large datasets. Candidate prediction is processed in batches to limit peak memory use.
 
 ## Important TabFM license notice
 
@@ -142,7 +152,7 @@ CSV input uses compact Encoding and Delimiter selectors. Auto mode handles UTF-8
 ## Using the app
 
 1. Upload a CSV file. Encoding and delimiter default to Auto; open `CSV input options` only when manual selection is needed.
-2. Choose one or more complete target columns and optional excluded columns such as IDs. All selected target columns are removed from the feature set for every benchmark target to reduce target leakage.
+2. Choose one or more target columns with at least one observed value and optional excluded columns such as IDs. Rows missing the currently evaluated target are dropped only for that target. All selected target columns are removed from the feature set for every benchmark target to reduce target leakage.
 3. Select regression or classification.
 4. Select models with the individual sidebar toggles; unavailable backends remain visible but disabled.
 5. Run the holdout benchmark. Selected targets are processed sequentially; a failed model or target does not stop the remaining targets.

@@ -24,6 +24,7 @@ from tabtester.backends import (
     available_model_names,
     foundation_model_names,
     make_backend,
+    model_supports_task,
     registered_model_names,
 )
 from tabtester.export import build_benchmark_zip, run_settings_frame
@@ -198,6 +199,15 @@ def benchmark_run_settings_sections(
         "AutoML and tuning": {
             "Optuna trials": n_trials,
             "AutoML time budget seconds": time_budget,
+        },
+        "Gaussian Process": {
+            "Selected": [name for name in selected_models if name == "GP (Generic Matern)"],
+            "Kernel": "ARD Matern-5/2",
+            "Feature encoding": "Dummy encoding + train-only median imputation + min-max scaling",
+            "Objective": "0.5 analytical observation-LOO NLL + 0.5 exact MLL NLL",
+            "Optimizer": "torch LBFGS",
+            "Max iterations": 150,
+            "Learning rate": 0.1,
         },
         "Environment": {
             "Python": sys.version.split()[0],
@@ -1491,8 +1501,7 @@ def main() -> None:
     st.title(APP_TITLE)
     st.caption("A lightweight workbench for comparing tabular foundation models and classical baselines.")
 
-    available_models = available_model_names()
-    available_foundation_models = foundation_model_names()
+    installed_model_set = set(available_model_names())
 
     with st.sidebar:
         render_environment_status()
@@ -1500,7 +1509,10 @@ def main() -> None:
         st.subheader("Benchmark settings")
         task = st.radio("Task type", ["Regression", "Classification"], index=0)
         all_models = registered_model_names()
+        available_models = available_model_names(task)
         available_model_set = set(available_models)
+        available_foundation_models = foundation_model_names(task)
+        regression_available_models = available_model_names("Regression")
         default_models = [name for name in ["TabICLv2", "XGBoost (Default)"] if name in available_model_set]
         if not default_models and available_models:
             default_models = available_models[:1]
@@ -1509,21 +1521,31 @@ def main() -> None:
         selected_models = []
         for model_name in all_models:
             toggle_key = f"benchmark_model_toggle::{model_name}"
-            is_available = model_name in available_model_set
+            is_installed = model_name in installed_model_set
+            task_supported = model_supports_task(model_name, task)
+            is_available = is_installed and task_supported
             if toggle_key not in st.session_state:
                 st.session_state[toggle_key] = model_name in default_models
             if not is_available:
                 st.session_state[toggle_key] = False
+            if not is_installed:
+                help_text = "Required backend is not installed in this environment."
+            elif not task_supported:
+                help_text = f"{model_name} does not support {task}."
+            elif model_name == "GP (Generic Matern)":
+                help_text = "Regression-only exact ARD Matern-5/2 GP; best suited to small and moderate datasets."
+            else:
+                help_text = None
             enabled = st.toggle(
                 model_name,
                 key=toggle_key,
                 disabled=not is_available,
-                help=None if is_available else "Required backend is not installed in this environment.",
+                help=help_text,
             )
             if enabled and is_available:
                 selected_models.append(model_name)
 
-        unavailable_models = [name for name in all_models if name not in available_model_set]
+        unavailable_models = [name for name in all_models if name not in installed_model_set]
         if unavailable_models:
             st.caption("Unavailable backends are shown disabled: " + ", ".join(unavailable_models))
 
@@ -1556,7 +1578,7 @@ def main() -> None:
             n_trials = st.slider("Optuna trials", min_value=5, max_value=50, value=10, step=5)
             time_budget = st.slider("AutoML time budget (seconds)", min_value=10, max_value=300, value=30, step=10)
 
-    if not available_models:
+    if not benchmark_available_models:
         st.error("No model backend is available. Install at least one supported backend.")
         return
 
@@ -1795,15 +1817,17 @@ def main() -> None:
                                         probabilities=probabilities,
                                         classes=backend.class_labels(),
                                     )
-                                results.append(
-                                    {
-                                        "Model": model_name,
-                                        **metrics,
-                                        "Fit Time (s)": fit_time,
-                                        "Predict Time (s)": predict_time,
-                                        "Total Time (s)": fit_time + predict_time,
-                                    }
-                                )
+                                result_row = {
+                                    "Model": model_name,
+                                    **metrics,
+                                    "Fit Time (s)": fit_time,
+                                    "Predict Time (s)": predict_time,
+                                    "Total Time (s)": fit_time + predict_time,
+                                }
+                                final_loo_loss = getattr(backend, "final_loo_loss_", None)
+                                if final_loo_loss is not None:
+                                    result_row["LOO NLL (scaled)"] = float(final_loo_loss)
+                                results.append(result_row)
 
                                 if shap_image is None and backend.supports_shap:
                                     payload = backend.shap_payload(X_test)
@@ -2127,7 +2151,7 @@ def main() -> None:
         render_recommendation_page(
             df,
             dataset_signature,
-            available_models,
+            regression_available_models,
             recommendation_config,
             random_state,
             default_properties=benchmark_targets,
