@@ -15,10 +15,16 @@ class RegistryTest(unittest.TestCase):
         config = BackendConfig(task="Regression")
         self.assertEqual(config.device, "auto")
         self.assertEqual(config.tabicl_batch_size, 4)
+        self.assertEqual(config.kumo_size, "small")
+        self.assertEqual(config.kumo_n_estimators, 8)
         self.assertEqual(config.gp_max_iter, 150)
 
     def test_registered_model_names_preserve_registry_order(self):
         self.assertEqual(registered_model_names(), [spec.name for spec in MODEL_SPECS])
+
+    def test_kumo_tabular_supports_both_tasks(self):
+        self.assertTrue(model_supports_task("KumoTabular", "Regression"))
+        self.assertTrue(model_supports_task("KumoTabular", "Classification"))
 
     def test_generic_gp_is_registered_for_regression_only(self):
         self.assertTrue(model_supports_task("GP (Generic Matern)", "Regression"))

@@ -2,6 +2,7 @@ FROM nvcr.io/nvidia/pytorch:26.05-py3
 
 
 ARG ENABLE_JAPANESE_SUPPORT=0
+ARG STRUCTURED_DATA_MODELS_REF=main
 
 LABEL org.opencontainers.image.title="Tabtester" \
       org.opencontainers.image.description="A Streamlit workbench for tabular model evaluation" \
@@ -33,23 +34,25 @@ RUN set -eu; \
     esac; \
     rm -rf "${MPLCONFIGDIR}"; \
     mkdir -p "${MPLCONFIGDIR}"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends git; \
     if [ "${ENABLE_JAPANESE_SUPPORT}" = "1" ]; then \
-        apt-get update; \
         apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk; \
-        rm -rf /var/lib/apt/lists/*; \
         fc-cache -f; \
         printf 'font.family: sans-serif\nfont.sans-serif: Noto Sans CJK JP, DejaVu Sans\naxes.unicode_minus: False\n' > "${MPLCONFIGDIR}/matplotlibrc"; \
     else \
         echo "Skipping Japanese font installation."; \
-    fi
+    fi; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY requirements-ngc.txt ./requirements-ngc.txt
 RUN python -m pip install --no-cache-dir -r requirements-ngc.txt \
+    && python -m pip install --no-cache-dir --no-deps "git+https://github.com/NVIDIA/structured-data-models.git@${STRUCTURED_DATA_MODELS_REF}" \
     && python - <<'PY'
 import importlib.metadata
 import torch
 
-for package in ("torch", "tabicl", "tabfm", "streamlit"):
+for package in ("torch", "tabicl", "tabfm", "structured-data-models", "streamlit"):
     print(f"{package}: {importlib.metadata.version(package)}")
 print(f"cuda_runtime: {torch.version.cuda}")
 PY

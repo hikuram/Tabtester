@@ -114,6 +114,9 @@ def package_version(name: str) -> str:
 def application_source_fingerprint() -> str:
     root = Path(__file__).resolve().parent
     paths = [root / "app.py"] + sorted((root / "tabtester").rglob("*.py"))
+    vendored_sdm = root / "vendor" / "structured-data-models" / "sdm"
+    if vendored_sdm.is_dir():
+        paths += sorted(vendored_sdm.rglob("*.py"))
     digest = hashlib.sha256()
     for path in paths:
         if not path.is_file():
@@ -152,6 +155,8 @@ def benchmark_run_settings_sections(
     tabicl_use_amp: bool | str,
     tabicl_offload_mode: bool | str,
     tabfm_checkpoint_path: str | None,
+    kumo_size: str,
+    kumo_n_estimators: int,
     outputs: Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     cuda_available = torch.cuda.is_available()
@@ -194,6 +199,9 @@ def benchmark_run_settings_sections(
             "TabICLv2 KV cache": tabicl_kv_cache,
             "TabICLv2 AMP": tabicl_use_amp,
             "TabICLv2 offload mode": tabicl_offload_mode,
+            "KumoTabular size": kumo_size,
+            "KumoTabular estimators": kumo_n_estimators,
+            "KumoTabular estimator batch size": 1,
             "TabFM checkpoint": tabfm_checkpoint_path or "default Hugging Face checkpoint",
         },
         "AutoML and tuning": {
@@ -220,6 +228,7 @@ def benchmark_run_settings_sections(
             "pyarrow": package_version("pyarrow"),
             "tabicl": package_version("tabicl"),
             "tabfm": package_version("tabfm"),
+            "structured-data-models": package_version("structured-data-models"),
             "xgboost": package_version("xgboost"),
             "lightgbm": package_version("lightgbm"),
             "catboost": package_version("catboost"),
@@ -313,6 +322,8 @@ def build_config(
     tabicl_use_amp: bool | str,
     tabicl_offload_mode: bool | str,
     tabfm_checkpoint_path: str | None,
+    kumo_size: str,
+    kumo_n_estimators: int,
 ) -> BackendConfig:
     return BackendConfig(
         task=task,
@@ -326,6 +337,8 @@ def build_config(
         tabicl_use_amp=tabicl_use_amp,
         tabicl_offload_mode=tabicl_offload_mode,
         tabfm_checkpoint_path=tabfm_checkpoint_path or None,
+        kumo_size=kumo_size,
+        kumo_n_estimators=kumo_n_estimators,
     )
 
 
@@ -352,6 +365,7 @@ def render_environment_status() -> None:
     st.text(f"Python packages: torch {package_version('torch')}")
     st.text(f"TabICL: {package_version('tabicl')}")
     st.text(f"TabFM: {package_version('tabfm')}")
+    st.text(f"Kumo/SDM: {package_version('structured-data-models')}")
     st.text(f"CUDA runtime: {torch.version.cuda or 'None'}")
     st.text(f"CUDA available: {torch.cuda.is_available()}")
     offline = os.getenv("HF_HUB_OFFLINE", "0").strip() == "1"
@@ -1568,6 +1582,20 @@ def main() -> None:
             tabicl_kv_cache: bool | str = False if kv_cache_label == "off" else kv_cache_label
             tabicl_use_amp = st.selectbox("TabICLv2 AMP", ["auto", True, False], index=0)
             tabicl_offload_mode = st.selectbox("TabICLv2 offload", ["auto", True, False], index=0)
+            if "KumoTabular" in available_models:
+                kumo_size = st.selectbox(
+                    "KumoTabular size",
+                    ["small", "medium", "large"],
+                    index=0,
+                    help=(
+                        "small is the default Tabtester profile. medium and large require their "
+                        "checkpoints to be prefetched before offline use."
+                    ),
+                )
+                kumo_n_estimators = st.slider("KumoTabular estimators", 1, 16, 8, 1)
+            else:
+                kumo_size = "small"
+                kumo_n_estimators = 8
             tabfm_checkpoint_path = st.text_input(
                 "TabFM local checkpoint path",
                 value="",
@@ -1666,6 +1694,8 @@ def main() -> None:
         tabicl_use_amp,
         tabicl_offload_mode,
         tabfm_checkpoint_path,
+        kumo_size,
+        kumo_n_estimators,
     )
     recommendation_config = build_config(
         "Regression",
@@ -1679,6 +1709,8 @@ def main() -> None:
         tabicl_use_amp,
         tabicl_offload_mode,
         tabfm_checkpoint_path,
+        kumo_size,
+        kumo_n_estimators,
     )
 
     tab_eval, tab_predict, tab_impute, tab_recommend = st.tabs(
@@ -1727,7 +1759,10 @@ def main() -> None:
                 "TabFM uses a bounded context window and samples context rows when the training table "
                 "is larger than its configured context size."
             )
-        if task == "Classification" and "TabFM" in selected_models:
+        limited_class_models = [
+            name for name in ["TabFM", "KumoTabular"] if name in selected_models
+        ]
+        if task == "Classification" and limited_class_models:
             oversized_targets = [
                 target
                 for target in benchmark_targets
@@ -1735,7 +1770,8 @@ def main() -> None:
             ]
             if oversized_targets:
                 st.warning(
-                    "TabFM v1.0.0 supports at most 10 classes and may fail for: "
+                    ", ".join(limited_class_models)
+                    + " support at most 10 classes and may fail for: "
                     + ", ".join(oversized_targets)
                 )
 
@@ -1939,6 +1975,8 @@ def main() -> None:
                         tabicl_use_amp=tabicl_use_amp,
                         tabicl_offload_mode=tabicl_offload_mode,
                         tabfm_checkpoint_path=tabfm_checkpoint_path,
+                        kumo_size=kumo_size,
+                        kumo_n_estimators=kumo_n_estimators,
                         outputs=outputs,
                     )
                 )

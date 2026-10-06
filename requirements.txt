@@ -3,6 +3,7 @@ altair>=5.5,<6
 torch>=2.12,<2.13
 tabicl==2.1.1
 tabfm[pytorch]==1.0.1
+structured-data-models @ git+https://github.com/NVIDIA/structured-data-models.git@main
 pandas>=2,<4
 scikit-learn>=1.6,<2
 numpy>=2,<2.5

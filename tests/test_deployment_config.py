@@ -14,7 +14,8 @@ class DeploymentConfigTest(unittest.TestCase):
     def test_compose_has_no_variable_interpolation(self):
         compose_text = (ROOT / "compose.yaml").read_text(encoding="utf-8")
         self.assertNotIn("${", compose_text)
-        self.assertIn('PREFETCH_FOUNDATION_MODELS: "tabicl"', compose_text)
+        self.assertIn('PREFETCH_FOUNDATION_MODELS: "tabicl,kumo"', compose_text)
+        self.assertIn('KUMO_PREFETCH_SIZES: "small"', compose_text)
         self.assertIn('ACCEPT_TABFM_LICENSE: "0"', compose_text)
         self.assertIn('- "8501:8501"', compose_text)
 
@@ -25,8 +26,19 @@ class DeploymentConfigTest(unittest.TestCase):
         self.assertIn("ARG ENABLE_JAPANESE_SUPPORT=0", dockerfile)
         self.assertIn('if [ "${ENABLE_JAPANESE_SUPPORT}" = "1" ]', dockerfile)
         self.assertIn("fonts-noto-cjk", dockerfile)
+        self.assertIn("ARG STRUCTURED_DATA_MODELS_REF=main", dockerfile)
+        self.assertIn("git+https://github.com/NVIDIA/structured-data-models.git@${STRUCTURED_DATA_MODELS_REF}", dockerfile)
+        self.assertNotIn("vendor/structured-data-models", dockerfile)
         self.assertIn("font.sans-serif: Noto Sans CJK JP, DejaVu Sans", dockerfile)
         self.assertNotIn("build-config.json", dockerfile)
+
+    def test_kumo_source_is_not_vendored(self):
+        self.assertFalse((ROOT / "vendor" / "structured-data-models").exists())
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn(
+            "structured-data-models @ git+https://github.com/NVIDIA/structured-data-models.git@main",
+            requirements,
+        )
 
     def test_no_python_configuration_layer(self):
         self.assertFalse((ROOT / "tabtester" / "config.py").exists())

@@ -4,7 +4,7 @@ import importlib.util
 from dataclasses import dataclass
 
 from .base import BackendConfig, ModelBackend
-from .foundation import TabFMBackend, TabICLv2Backend
+from .foundation import KumoTabularBackend, TabFMBackend, TabICLv2Backend
 from .gaussian_process import GenericMaternGPBackend
 from .traditional import (
     AutoGluonBackend,
@@ -28,6 +28,7 @@ class ModelSpec:
 MODEL_SPECS = (
     ModelSpec("TabFM", "foundation", ("tabfm",), TabFMBackend),
     ModelSpec("TabICLv2", "foundation", ("tabicl",), TabICLv2Backend),
+    ModelSpec("KumoTabular", "foundation", ("sdm",), KumoTabularBackend),
     ModelSpec("XGBoost (Default)", "traditional", ("xgboost",), XGBoostDefaultBackend),
     ModelSpec("LightGBM", "traditional", ("lightgbm",), LightGBMBackend),
     ModelSpec("CatBoost", "traditional", ("catboost",), CatBoostBackend),

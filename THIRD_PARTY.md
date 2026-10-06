@@ -8,6 +8,16 @@ TabICL is an independent upstream project. Review its repository, model files, a
 
 Upstream repository: https://github.com/soda-inria/tabicl
 
+## NVIDIA Structured Data Models / KumoTabular
+
+Tabtester does not vendor NVIDIA `structured-data-models`. The package is installed by pip directly from the upstream NVIDIA GitHub repository during the image build. The upstream source is licensed under Apache-2.0 and includes its own `LICENSE`, `THIRD_PARTY_LICENSES.md`, and bundled third-party notices. Users redistributing the installed package should retain the applicable upstream license and notices.
+
+KumoTabular pretrained weights are not included in the Tabtester source archive or application image. The optional model-prefetch service downloads them into the user's persistent model cache. NVIDIA distributes the KumoTabular weights under OpenMDW-1.1. That license permits dealing in the model materials subject to its terms and requires the license and applicable notices to be retained when model materials are distributed.
+
+Upstream source: https://github.com/NVIDIA/structured-data-models
+
+Upstream weights: https://huggingface.co/nvidia/Kumo-Tabular
+
 ## TabFM
 
 The source repository and Docker image do not ship TabFM pretrained weights. The default `compose.yaml` prefetch configuration does not request TabFM weights. To enable TabFM prefetch, the operator must explicitly edit the fixed `PREFETCH_FOUNDATION_MODELS` and `ACCEPT_TABFM_LICENSE` values in `compose.yaml` after reviewing the upstream weight license.

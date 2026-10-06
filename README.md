@@ -7,6 +7,7 @@ The project supports regression and classification, holdout benchmarking, predic
 ## Current backends
 
 - TabICLv2
+- KumoTabular (NVIDIA Structured Data Models)
 - TabFM using the PyTorch backend
 - XGBoost
 - LightGBM
@@ -24,6 +25,14 @@ The project supports regression and classification, holdout benchmarking, predic
 The GP uses the same target-specific train/test split as the other Benchmark models. Its fixed training objective is 50% analytical observation-LOO predictive NLL + 50% exact marginal-likelihood NLL, optimized with PyTorch LBFGS for up to 150 iterations. `LOO NLL (scaled)` is included in Benchmark output as a diagnostic.
 
 The backend is available for Regression in Benchmark, Predict New Rows, and Recommend Candidates. It is disabled for Classification. Missing Target Imputation remains limited to foundation-model backends by design. Exact GP training scales cubically with the number of labeled rows, so this backend is not intended as the default choice for large datasets. Candidate prediction is processed in batches to limit peak memory use.
+
+## KumoTabular
+
+Tabtester integrates NVIDIA `KumoTabular` through the `structured-data-models` API. The Kumo implementation is not vendored in this repository. During image build, pip installs it directly from the NVIDIA GitHub repository (`https://github.com/NVIDIA/structured-data-models`). The Dockerfile exposes `STRUCTURED_DATA_MODELS_REF` as a build argument; its default is `main`, and a commit or tag can be supplied when a reproducible pin is preferred. Pretrained Kumo weights are not included in the repository or application image; they are downloaded only by the model-prefetch service into the persistent model cache.
+
+The UI exposes `small`, `medium`, and `large` Kumo variants plus the ensemble estimator count. Tabtester's default is `small` with 8 estimators; this keeps the first comparison close to the parameter scale of TabICLv2 and limits GPU memory pressure. The model supports regression and classification, with classification limited to at most 10 classes. Kumo's upstream preprocessing is used directly for numeric and categorical DataFrame columns. For regression, the backend returns the mean across Kumo's 999 predicted quantiles as the point prediction used by Tabtester metrics and Recommendation.
+
+Kumo source code is Apache-2.0. The pretrained Kumo weights are distributed separately under OpenMDW-1.1. Review `THIRD_PARTY.md` and the upstream model license before redistribution.
 
 ## Important TabFM license notice
 
@@ -74,6 +83,8 @@ docker compose run --rm model-prefetch
 docker compose up -d
 ```
 
+By default the image installs `structured-data-models` from the GitHub `main` branch. To pin a specific upstream revision, build with for example `docker compose build --build-arg STRUCTURED_DATA_MODELS_REF=<commit-or-tag>`.
+
 The prefetch step writes model files into the persistent `model-cache` named volume. Rebuilding the image does not delete this volume.
 
 Open:
@@ -108,7 +119,8 @@ The normal deployment profile is deliberately simple and reproducible.
 - GPU reservation
 - offline network policy for the app service
 - network-enabled model-prefetch service
-- default prefetch target `tabicl`
+- default prefetch targets `tabicl,kumo`
+- default Kumo prefetch size `small`
 - default TabFM prefetch license acknowledgement `0`
 
 If a different deployment profile is needed, edit `Dockerfile` or `compose.yaml` explicitly and rebuild/recreate the service. There is no secondary `.env` layer that can silently change the image or service configuration.
@@ -122,18 +134,22 @@ The application runs with Hugging Face offline mode enabled. The `model-prefetch
 The default `compose.yaml` contains:
 
 ```yaml
-PREFETCH_FOUNDATION_MODELS: "tabicl"
+PREFETCH_FOUNDATION_MODELS: "tabicl,kumo"
+KUMO_PREFETCH_SIZES: "small"
 ACCEPT_TABFM_LICENSE: "0"
 ```
 
-To prefetch TabFM as well, review its pretrained-weight license and then edit those two fixed values in `compose.yaml` to:
+The default prefetch downloads TabICLv2 plus the Kumo `small` regression and classification checkpoints. To use Kumo `medium` or `large` while the application remains offline, edit `KUMO_PREFETCH_SIZES` before running the prefetch service. It accepts one size, a comma-separated set such as `"small,medium"`, or `"all"`.
+
+To prefetch TabFM as well, review its pretrained-weight license and then edit the fixed values in `compose.yaml` to:
 
 ```yaml
 PREFETCH_FOUNDATION_MODELS: "all"
+KUMO_PREFETCH_SIZES: "small"
 ACCEPT_TABFM_LICENSE: "1"
 ```
 
-Then run:
+`PREFETCH_FOUNDATION_MODELS` also accepts a comma-separated subset of `tabicl`, `kumo`, and `tabfm`. Then run:
 
 ```bash
 docker compose run --rm model-prefetch
@@ -225,6 +241,8 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+Local installation now requires `git` because `requirements.txt` installs `structured-data-models` directly from the NVIDIA GitHub repository.
+
 A direct local run uses the same CSV parser, including CP932. Plot fonts are left to the local Matplotlib/OS configuration; Tabtester does not probe or alter them. The supported deployment profile is the Docker image described above.
 
 ## Repository structure
@@ -254,6 +272,8 @@ Tabtester/
 ├── THIRD_PARTY.md
 └── LICENSE
 ```
+
+Kumo source is not stored in this tree; `structured-data-models` is installed from NVIDIA/structured-data-models by pip at build/install time.
 
 ## Adding another backend
 

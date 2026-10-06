@@ -40,7 +40,8 @@ services:
     environment:
       <<: *model-cache-environment
       HF_HUB_OFFLINE: "0"
-      PREFETCH_FOUNDATION_MODELS: "tabicl"
+      PREFETCH_FOUNDATION_MODELS: "tabicl,kumo"
+      KUMO_PREFETCH_SIZES: "small"
       ACCEPT_TABFM_LICENSE: "0"
     volumes:
       - model-cache:/models
